@@ -1,4 +1,4 @@
-"""Generate clean PDFs from Substack HTML articles and YouTube transcripts."""
+"""Generate clean PDFs from Substack articles, YouTube transcripts, and website articles."""
 
 from pathlib import Path
 
@@ -220,6 +220,56 @@ def generate_youtube_pdf(
         pdf.set_font("Helvetica", "I", 11)
         pdf.set_text_color(150, 150, 150)
         pdf.multi_cell(0, 6, "No transcript available for this video.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf.output(str(output_path))
+    return output_path
+
+
+def generate_website_pdf(
+    title: str,
+    author: str,
+    date: str,
+    text_content: str,
+    url: str,
+    source: str,
+    output_path: Path,
+) -> Path:
+    """Render a generic website article to a PDF file."""
+    pdf = _init_pdf(title)
+
+    # title
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(30, 30, 30)
+    pdf.multi_cell(0, 10, _sanitize(title))
+    pdf.ln(3)
+
+    # source
+    pdf.set_font("Helvetica", "", 12)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 7, _sanitize(f"Source: {source}"))
+    pdf.ln(5)
+
+    # meta
+    meta_parts = []
+    if author:
+        meta_parts.append(f"By {author}")
+    meta_parts.append(date[:10] if date else "Unknown date")
+    meta_parts.append(url)
+    _write_meta(pdf, meta_parts)
+
+    # body
+    pdf.set_font("Helvetica", "", 11)
+    pdf.set_text_color(40, 40, 40)
+    if text_content:
+        paragraphs = [p.strip() for p in text_content.split("\n") if p.strip()]
+        for para in paragraphs:
+            pdf.multi_cell(0, 6, _sanitize(para))
+            pdf.ln(2)
+    else:
+        pdf.set_font("Helvetica", "I", 11)
+        pdf.set_text_color(150, 150, 150)
+        pdf.multi_cell(0, 6, "No content could be extracted for this article.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pdf.output(str(output_path))

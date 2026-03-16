@@ -27,7 +27,11 @@ from telegram.ext import (
 
 from retrieve_bot import config
 from retrieve_bot.onedrive_client import OneDriveClient
-from retrieve_bot.pdf_generator import generate_substack_pdf, generate_youtube_pdf
+from retrieve_bot.pdf_generator import (
+    generate_substack_pdf,
+    generate_youtube_pdf,
+    generate_website_pdf,
+)
 from retrieve_bot.substack_monitor import (
     check_substack_for_new_posts,
     get_post_html_content,
@@ -35,6 +39,11 @@ from retrieve_bot.substack_monitor import (
 from retrieve_bot.youtube_monitor import (
     check_youtube_for_new_videos,
     get_transcript,
+)
+from retrieve_bot.website_monitor import (
+    check_websites_for_new_content,
+    scrape_article_content,
+    derive_source_label,
 )
 
 load_dotenv()
@@ -70,13 +79,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config.set_chat_id(update.effective_chat.id)
     await update.message.reply_text(
         "Welcome to *Retrieve Bot*\\!\n\n"
-        "I monitor your Substack and YouTube sources every 24 hours "
-        "and save approved content as PDFs to OneDrive\\.\n\n"
+        "I monitor your Substack, YouTube, and website sources every "
+        "24 hours and save approved content as PDFs to OneDrive\\.\n\n"
         "*Source management*\n"
         "/add\\_substack `<username>` \\- track a publisher\n"
         "/remove\\_substack `<username>` \\- stop tracking\n"
         "/add\\_youtube `<handle>` \\- track a channel\n"
         "/remove\\_youtube `<handle>` \\- stop tracking\n"
+        "/add\\_website `<url>` \\- track any website\n"
+        "/remove\\_website `<url>` \\- stop tracking\n"
         "/add\\_spotify `<name>` \\- track \\(coming soon\\)\n"
         "/remove\\_spotify `<name>` \\- stop tracking\n\n"
         "*Actions*\n"
@@ -140,12 +151,39 @@ async def cmd_add_spotify(update, context):
 async def cmd_remove_spotify(update, context):
     await _remove_source(update, context, "spotify", "name")
 
+async def cmd_add_website(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /add_website <url>")
+        return
+    url = context.args[0].strip()
+    if not url.startswith("http"):
+        url = f"https://{url}"
+    if config.add_source("websites", url):
+        label = derive_source_label(url)
+        await update.message.reply_text(
+            f"Now tracking website: {url}\nLabel: {label}"
+        )
+    else:
+        await update.message.reply_text(f"Already tracking: {url}")
+
+async def cmd_remove_website(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /remove_website <url>")
+        return
+    url = context.args[0].strip()
+    if not url.startswith("http"):
+        url = f"https://{url}"
+    if config.remove_source("websites", url):
+        await update.message.reply_text(f"Stopped tracking website: {url}")
+    else:
+        await update.message.reply_text(f"Not currently tracking: {url}")
+
 
 # ---- list / status ----
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["Tracked Sources\n"]
-    for platform in ("substack", "youtube", "spotify"):
+    for platform in ("substack", "youtube", "websites", "spotify"):
         sources = config.get_sources(platform)
         lines.append(f"{platform.title()}:")
         if sources:
@@ -164,6 +202,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     od_status = "Authenticated" if onedrive_client.is_authenticated() else "Not authenticated"
     n_sub = len(config.get_sources("substack"))
     n_yt = len(config.get_sources("youtube"))
+    n_web = len(config.get_sources("websites"))
     n_sp = len(config.get_sources("spotify"))
     last = config.get_last_check()
     last_str = last.strftime("%Y-%m-%d %H:%M UTC") if last else "Never"
@@ -174,6 +213,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"-------------------\n"
         f"Substack sources: {n_sub}\n"
         f"YouTube sources:  {n_yt}\n"
+        f"Website sources:  {n_web}\n"
         f"Spotify sources:  {n_sp}\n"
         f"Last check:       {last_str}\n"
         f"Pending items:    {n_pending}\n"
@@ -252,6 +292,18 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
         except Exception as exc:
             await context.bot.send_message(chat_id, f"YouTube error: {exc}")
 
+    # --- Websites ---
+    websites = config.get_sources("websites")
+    if websites:
+        try:
+            loop = asyncio.get_event_loop()
+            items = await loop.run_in_executor(
+                None, check_websites_for_new_content, websites
+            )
+            all_items.extend(items)
+        except Exception as exc:
+            await context.bot.send_message(chat_id, f"Website error: {exc}")
+
     config.update_last_check()
 
     if not all_items:
@@ -268,9 +320,14 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
     config.save_pending_items(list(pending_items.values()))
 
     # Build summary message
+    _PLATFORM_ICONS = {
+        "substack": "\U0001f4dd",
+        "youtube": "\U0001f3ac",
+        "website": "\U0001f4c4",
+    }
     summary_lines = [f"New Content Found ({len(all_items)} items)", "=" * 35, ""]
     for i, item in enumerate(all_items, 1):
-        icon = "\U0001f4dd" if item["platform"] == "substack" else "\U0001f3ac"
+        icon = _PLATFORM_ICONS.get(item["platform"], "\U0001f4c4")
         summary_lines.append(f"{i}. {icon} [{item['source']}] {item['title']}")
         if item.get("subtitle"):
             summary_lines.append(f"   {item['subtitle'][:80]}")
@@ -282,7 +339,7 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
     options: List[str] = []
     item_ids: List[str] = []
     for item in all_items:
-        icon = "\U0001f4dd" if item["platform"] == "substack" else "\U0001f3ac"
+        icon = _PLATFORM_ICONS.get(item["platform"], "\U0001f4c4")
         truncated = item["title"][:90]
         options.append(f"{icon} {truncated}")
         item_ids.append(item["id"])
@@ -412,6 +469,27 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
                 with open(local_path, "rb") as f:
                     onedrive_client.upload_file(remote, f.read())
 
+            elif item["platform"] == "website":
+                content = await asyncio.get_event_loop().run_in_executor(
+                    None, scrape_article_content, item["url"]
+                )
+                source_label = item.get("source", derive_source_label(
+                    item.get("listing_url", item["url"])
+                ))
+                generate_website_pdf(
+                    title=content.get("title") or item["title"],
+                    author=content.get("author", ""),
+                    date=content.get("date") or item.get("date", ""),
+                    text_content=content.get("text", ""),
+                    url=item["url"],
+                    source=source_label,
+                    output_path=local_path,
+                )
+                remote = f"Websites/{source_label}/{filename}"
+                onedrive_client.ensure_folder(f"Websites/{source_label}")
+                with open(local_path, "rb") as f:
+                    onedrive_client.upload_file(remote, f.read())
+
             local_path.unlink(missing_ok=True)
             config.mark_post_seen(item["id"])
             saved += 1
@@ -460,6 +538,8 @@ def create_application() -> Application:
     app.add_handler(CommandHandler("remove_substack", cmd_remove_substack))
     app.add_handler(CommandHandler("add_youtube", cmd_add_youtube))
     app.add_handler(CommandHandler("remove_youtube", cmd_remove_youtube))
+    app.add_handler(CommandHandler("add_website", cmd_add_website))
+    app.add_handler(CommandHandler("remove_website", cmd_remove_website))
     app.add_handler(CommandHandler("add_spotify", cmd_add_spotify))
     app.add_handler(CommandHandler("remove_spotify", cmd_remove_spotify))
     app.add_handler(CommandHandler("list", cmd_list))

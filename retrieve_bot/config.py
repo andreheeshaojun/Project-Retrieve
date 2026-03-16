@@ -12,6 +12,7 @@ DEFAULT_CONFIG = {
     "substack": [],
     "youtube": [],
     "spotify": [],
+    "websites": [],
     "last_check": None,
     "seen_posts": {},
     "pending_items": [],
