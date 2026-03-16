@@ -36,10 +36,9 @@ class OneDriveClient:
         self._cache = msal.SerializableTokenCache()
         self._load_cache()
 
-        self.app = msal.ConfidentialClientApplication(
+        self.app = msal.PublicClientApplication(
             CLIENT_ID,
             authority=AUTHORITY,
-            client_credential=CLIENT_SECRET,
             token_cache=self._cache,
         )
 
