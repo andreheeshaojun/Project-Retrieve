@@ -383,13 +383,29 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
     _summary_text = "\n".join(summary_lines)
     _dbg("summary message built", {"length": len(_summary_text), "item_count": len(all_items)}, hyp="H1", loc="telegram_handler.py:summary")
     # #endregion
-    try:
+
+    _MSG_LIMIT = 4096
+    if len(_summary_text) <= _MSG_LIMIT:
         await context.bot.send_message(chat_id, _summary_text)
-    except Exception as _exc:
-        # #region agent log
-        _dbg("summary send FAILED", {"error": str(_exc), "length": len(_summary_text)}, hyp="H1", loc="telegram_handler.py:summary")
-        # #endregion
-        raise
+    else:
+        _header = f"New Content Found ({len(all_items)} items)\n{'=' * 35}\n\n"
+        _chunk = _header
+        for i, item in enumerate(all_items, 1):
+            _icon = _PLATFORM_ICONS.get(item["platform"], "\U0001f4c4")
+            _entry = f"{i}. {_icon} [{item['source']}] {item['title']}\n"
+            if item.get("subtitle"):
+                _entry += f"   {item['subtitle'][:80]}\n"
+            _entry += f"   {item['url']}\n\n"
+            if len(_chunk) + len(_entry) > _MSG_LIMIT:
+                await context.bot.send_message(chat_id, _chunk)
+                _chunk = _entry
+            else:
+                _chunk += _entry
+        if _chunk:
+            await context.bot.send_message(chat_id, _chunk)
+    # #region agent log
+    _dbg("summary messages sent OK", {"total_len": len(_summary_text)}, hyp="H1", loc="telegram_handler.py:summary")
+    # #endregion
 
     # Send poll(s) – Telegram allows max 10 options per poll
     options: List[str] = []
