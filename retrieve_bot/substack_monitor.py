@@ -47,24 +47,37 @@ def normalize_substack_url(username_or_url: str) -> str:
 
 
 def _resolve_publication_url(profile_url: str) -> str:
-    """Given a substack.com/@user profile URL, find the actual publication URL."""
+    """Given a substack.com/@user profile URL, find the actual publication URL
+    by querying the Substack public_profile API."""
     import re as _re
-    resp = requests.get(profile_url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    html = resp.text
+    handle_match = _re.search(r'substack\.com/@([^/?#]+)', profile_url)
+    if not handle_match:
+        return ""
+    handle = handle_match.group(1)
 
-    match = _re.search(r'"base_url"\s*:\s*"(https?://[^"]+)"', html)
-    if match:
-        return match.group(1).rstrip("/")
+    api_url = f"https://substack.com/api/v1/user/{handle}/public_profile"
+    try:
+        resp = requests.get(api_url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return ""
 
-    match = _re.search(r'"url"\s*:\s*"(https?://[^"]*\.substack\.com)"', html)
-    if match:
-        return match.group(1).rstrip("/")
+    pub_users = data.get("publicationUsers", [])
+    primary = next((pu for pu in pub_users if pu.get("is_primary")), None)
+    if not primary:
+        primary = pub_users[0] if pub_users else None
+    if not primary:
+        return ""
 
-    match = _re.search(r'href="(https?://[a-zA-Z0-9-]+\.substack\.com)"', html)
-    if match:
-        return match.group(1).rstrip("/")
+    pub = primary.get("publication", {})
+    custom_domain = pub.get("custom_domain", "")
+    subdomain = pub.get("subdomain", "")
 
+    if custom_domain:
+        return f"https://{custom_domain}".rstrip("/")
+    if subdomain:
+        return f"https://{subdomain}.substack.com"
     return ""
 
 
