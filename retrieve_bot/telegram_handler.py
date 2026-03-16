@@ -410,26 +410,39 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
     # Send poll(s) – Telegram allows max 10 options per poll
     options: List[str] = []
     item_ids: List[str] = []
+    _POLL_OPT_LIMIT = 100
     for item in all_items:
         icon = _PLATFORM_ICONS.get(item["platform"], "\U0001f4c4")
-        truncated = item["title"][:90]
-        options.append(f"{icon} {truncated}")
+        src = item["source"]
+        prefix = f"{icon} [{src}] "
+        max_title = _POLL_OPT_LIMIT - len(prefix)
+        title = item["title"][:max_title]
+        options.append(f"{prefix}{title}")
         item_ids.append(item["id"])
 
     BATCH = 10
-    for start in range(0, len(options), BATCH):
-        batch_opts = options[start : start + BATCH]
-        batch_ids = item_ids[start : start + BATCH]
+    n_opts = len(options)
+    batch_ranges: List[tuple] = []
+    _i = 0
+    while _i < n_opts:
+        size = min(BATCH, n_opts - _i)
+        if n_opts - _i - size == 1:
+            size = BATCH - 1
+        batch_ranges.append((_i, size))
+        _i += size
+
+    total_batches = len(batch_ranges)
+    for batch_num, (start, size) in enumerate(batch_ranges, 1):
+        batch_opts = options[start : start + size]
+        batch_ids = item_ids[start : start + size]
 
         question = "Select content to save:"
-        if len(options) > BATCH:
-            batch_num = start // BATCH + 1
-            total_batches = (len(options) + BATCH - 1) // BATCH
+        if total_batches > 1:
             question = f"Select content to save ({batch_num}/{total_batches}):"
 
         # #region agent log
         _opt_lengths = [len(o) for o in batch_opts]
-        _dbg("sending poll batch", {"batch_start": start, "num_opts": len(batch_opts), "opt_lengths": _opt_lengths, "question_len": len(question)}, hyp="H4", loc="telegram_handler.py:poll")
+        _dbg("sending poll batch", {"batch_num": batch_num, "num_opts": len(batch_opts), "opt_lengths": _opt_lengths, "question_len": len(question)}, hyp="H4", loc="telegram_handler.py:poll")
         # #endregion
         try:
             poll_msg = await context.bot.send_poll(
@@ -442,7 +455,7 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             poll_to_item_ids[poll_msg.poll.id] = batch_ids
         except Exception as _exc:
             # #region agent log
-            _dbg("poll send FAILED", {"error": str(_exc), "batch_start": start, "opt_lengths": _opt_lengths}, hyp="H4", loc="telegram_handler.py:poll")
+            _dbg("poll send FAILED", {"error": str(_exc), "batch_num": batch_num, "opt_lengths": _opt_lengths}, hyp="H4", loc="telegram_handler.py:poll")
             # #endregion
             raise
 
