@@ -11,6 +11,18 @@ from retrieve_bot.config import is_post_seen
 
 logger = logging.getLogger(__name__)
 
+# #region agent log
+import json as _json, time as _time
+from pathlib import Path as _Path
+_DBG_LOG = _Path(__file__).parent.parent / "debug-f972e5.log"
+def _dbg(msg, data=None, hyp="", loc=""):
+    try:
+        with open(_DBG_LOG, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId":"f972e5","timestamp":int(_time.time()*1000),"location":loc,"message":msg,"data":data or {},"hypothesisId":hyp}) + "\n")
+    except Exception:
+        pass
+# #endregion
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -112,11 +124,20 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
     for channel_input in channels:
         try:
             channel_id = resolve_channel_id(channel_input)
+            # #region agent log
+            _dbg("yt resolve_channel_id", {"channel_input": channel_input, "channel_id": channel_id}, hyp="H6", loc="youtube_monitor.py:check")
+            # #endregion
             if not channel_id:
                 logger.warning("Could not resolve YouTube channel: %s", channel_input)
                 continue
 
-            for video in get_channel_videos(channel_id):
+            videos = get_channel_videos(channel_id)
+            # #region agent log
+            _seen_count = sum(1 for v in videos if is_post_seen(f"youtube_{v['video_id']}"))
+            _dbg("yt channel videos", {"channel": channel_input, "total_videos": len(videos), "already_seen": _seen_count}, hyp="H6,H7", loc="youtube_monitor.py:check")
+            # #endregion
+
+            for video in videos:
                 post_id = f"youtube_{video['video_id']}"
                 if is_post_seen(post_id):
                     continue
@@ -134,6 +155,9 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
                     }
                 )
         except Exception as exc:
+            # #region agent log
+            _dbg("yt channel EXCEPTION", {"channel": channel_input, "error": str(exc)}, hyp="H6", loc="youtube_monitor.py:check")
+            # #endregion
             logger.warning("YouTube check failed for %s: %s", channel_input, exc)
 
     return new_videos
