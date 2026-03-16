@@ -481,7 +481,7 @@ def create_application() -> Application:
         job_queue.run_repeating(
             scheduled_check,
             interval=86400,
-            first=60,
+            first=1800,
         )
 
     return app
