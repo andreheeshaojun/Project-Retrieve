@@ -46,19 +46,51 @@ def normalize_substack_url(username_or_url: str) -> str:
     return f"https://{s}.substack.com"
 
 
+def _resolve_publication_url(profile_url: str) -> str:
+    """Given a substack.com/@user profile URL, find the actual publication URL."""
+    import re as _re
+    resp = requests.get(profile_url, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    html = resp.text
+
+    match = _re.search(r'"base_url"\s*:\s*"(https?://[^"]+)"', html)
+    if match:
+        return match.group(1).rstrip("/")
+
+    match = _re.search(r'"url"\s*:\s*"(https?://[^"]*\.substack\.com)"', html)
+    if match:
+        return match.group(1).rstrip("/")
+
+    match = _re.search(r'href="(https?://[a-zA-Z0-9-]+\.substack\.com)"', html)
+    if match:
+        return match.group(1).rstrip("/")
+
+    return ""
+
+
 def fetch_recent_posts_raw(newsletter_url: str, limit: int = 15) -> list:
     """Hit the archive endpoint directly – one request per newsletter."""
     endpoint = f"{newsletter_url}/api/v1/archive?sort=new&offset=0&limit={limit}"
     resp = requests.get(endpoint, headers=HEADERS, timeout=30)
     sleep(2)
+
+    # #region agent log
+    _dbg("substack fetch response", {
+        "endpoint": endpoint, "status": resp.status_code,
+        "final_url": resp.url, "redirected": resp.url != endpoint,
+    }, hyp="H8", loc="substack_monitor.py:fetch")
+    # #endregion
+
     resp.raise_for_status()
 
     if "/api/v1/archive" not in resp.url:
-        base = resp.url.split("/api/")[0].rstrip("/")
-        retry_url = f"{base}/api/v1/archive?sort=new&offset=0&limit={limit}"
+        pub_url = _resolve_publication_url(resp.url)
         # #region agent log
-        _dbg("substack redirect retry", {"original": endpoint, "redirected_to": resp.url, "retry": retry_url}, hyp="H8", loc="substack_monitor.py:fetch")
+        _dbg("substack profile resolved", {"profile": resp.url, "publication_url": pub_url}, hyp="H8", loc="substack_monitor.py:resolve_pub")
         # #endregion
+        if not pub_url:
+            raise RuntimeError(f"Could not find publication URL from {resp.url}")
+        retry_url = f"{pub_url}/api/v1/archive?sort=new&offset=0&limit={limit}"
         resp = requests.get(retry_url, headers=HEADERS, timeout=30)
         sleep(2)
         resp.raise_for_status()
