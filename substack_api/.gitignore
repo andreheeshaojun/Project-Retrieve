@@ -1,0 +1,9 @@
+.conda/
+__pycache__/
+dist/
+.env
+.vscode/
+.DS_Store
+*.json
+substack_api.egg-info/
+.coverage
