@@ -27,9 +27,11 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/91.0.4472.77 Safari/537.36"
+        "Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+COOKIES = {"CONSENT": "PENDING+987", "SOCS": "CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg"}
 
 
 def resolve_channel_id(channel_input: str) -> Optional[str]:
@@ -49,8 +51,12 @@ def resolve_channel_id(channel_input: str) -> Optional[str]:
     for url in url_patterns:
         try:
             resp = requests.get(
-                url, headers=HEADERS, timeout=15, allow_redirects=True
+                url, headers=HEADERS, cookies=COOKIES,
+                timeout=15, allow_redirects=True,
             )
+            # #region agent log
+            _dbg("yt resolve attempt", {"url": url, "status": resp.status_code, "resp_len": len(resp.text), "has_channelId": '"channelId"' in resp.text}, hyp="H6", loc="youtube_monitor.py:resolve")
+            # #endregion
             if resp.status_code != 200:
                 continue
             match = re.search(

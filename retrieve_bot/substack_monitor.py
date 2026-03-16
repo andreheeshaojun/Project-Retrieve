@@ -52,6 +52,17 @@ def fetch_recent_posts_raw(newsletter_url: str, limit: int = 15) -> list:
     resp = requests.get(endpoint, headers=HEADERS, timeout=30)
     sleep(2)
     resp.raise_for_status()
+
+    if "/api/v1/archive" not in resp.url:
+        base = resp.url.split("/api/")[0].rstrip("/")
+        retry_url = f"{base}/api/v1/archive?sort=new&offset=0&limit={limit}"
+        # #region agent log
+        _dbg("substack redirect retry", {"original": endpoint, "redirected_to": resp.url, "retry": retry_url}, hyp="H8", loc="substack_monitor.py:fetch")
+        # #endregion
+        resp = requests.get(retry_url, headers=HEADERS, timeout=30)
+        sleep(2)
+        resp.raise_for_status()
+
     return resp.json()
 
 
