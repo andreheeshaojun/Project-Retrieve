@@ -158,13 +158,17 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
         _dbg("website scrape trafilatura", {"url": article_url, "downloaded_len": len(downloaded) if downloaded else 0, "has_login_gate": ("sign in" in (downloaded or "").lower() or "log in" in (downloaded or "").lower()), "has_transcript_link": ("access the full transcript" in (downloaded or "").lower())}, hyp="H23,H24,H25,H26", loc="website_monitor.py:scrape")
         if downloaded:
             import re as _re
-            _next_match = _re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', downloaded, _re.DOTALL)
-            _json_ld_matches = _re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', downloaded, _re.DOTALL)
-            _transcript_in_html = "transcript" in downloaded.lower()
-            _next_len = len(_next_match.group(1)) if _next_match else 0
-            _next_preview = _next_match.group(1)[:500] if _next_match else ""
-            _next_has_transcript = ("transcript" in _next_match.group(1).lower()) if _next_match else False
-            _dbg("website HTML deep scan", {"url": article_url, "has_NEXT_DATA": bool(_next_match), "NEXT_DATA_len": _next_len, "NEXT_DATA_preview": _next_preview, "NEXT_DATA_has_transcript": _next_has_transcript, "json_ld_count": len(_json_ld_matches), "json_ld_lens": [len(m) for m in _json_ld_matches], "transcript_in_raw_html": _transcript_in_html, "html_text_chars": len(_re.sub(r'<[^>]+>', '', downloaded))}, hyp="H27,H28,H29", loc="website_monitor.py:deep_scan")
+            from bs4 import BeautifulSoup as _BS
+            _soup = _BS(downloaded, "html.parser")
+            _hidden_divs = _soup.find_all(attrs={"style": _re.compile(r"display\s*:\s*none", _re.I)})
+            _hidden_text_len = sum(len(d.get_text()) for d in _hidden_divs)
+            _transcript_els = _soup.find_all(attrs={"class": _re.compile(r"transcript", _re.I)})
+            _transcript_id_els = _soup.find_all(attrs={"id": _re.compile(r"transcript", _re.I)})
+            _transcript_el_info = [{"tag": e.name, "class": e.get("class"), "text_len": len(e.get_text())} for e in _transcript_els[:5]]
+            _transcript_id_info = [{"tag": e.name, "id": e.get("id"), "text_len": len(e.get_text())} for e in _transcript_id_els[:5]]
+            _all_ps = _soup.find_all("p")
+            _long_ps = [p for p in _all_ps if len(p.get_text(strip=True)) > 100]
+            _dbg("website HTML structure", {"url": article_url, "hidden_div_count": len(_hidden_divs), "hidden_text_len": _hidden_text_len, "transcript_class_els": _transcript_el_info, "transcript_id_els": _transcript_id_info, "total_p_tags": len(_all_ps), "long_p_tags": len(_long_ps), "long_p_sample": [p.get_text()[:100] for p in _long_ps[:3]], "long_p_parents": [{"tag": p.parent.name, "class": p.parent.get("class"), "id": p.parent.get("id")} for p in _long_ps[:3]]}, hyp="H30,H31,H32", loc="website_monitor.py:html_structure")
         # #endregion
         if downloaded:
             extracted = trafilatura.bare_extraction(
