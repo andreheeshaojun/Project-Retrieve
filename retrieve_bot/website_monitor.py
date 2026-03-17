@@ -162,12 +162,19 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
                 downloaded, include_comments=False, include_tables=True
             )
             if extracted:
-                result["title"] = extracted.get("title") or ""
-                result["author"] = extracted.get("author") or ""
-                result["date"] = extracted.get("date") or ""
-                result["text"] = extracted.get("text") or ""
+                _get = getattr(extracted, "get", None)
+                if _get:
+                    result["title"] = _get("title") or ""
+                    result["author"] = _get("author") or ""
+                    result["date"] = _get("date") or ""
+                    result["text"] = _get("text") or ""
+                else:
+                    result["title"] = getattr(extracted, "title", "") or ""
+                    result["author"] = getattr(extracted, "author", "") or ""
+                    result["date"] = getattr(extracted, "date", "") or ""
+                    result["text"] = getattr(extracted, "text", "") or ""
                 # #region agent log
-                _dbg("website scrape extracted", {"url": article_url, "title": result["title"][:80], "text_len": len(result["text"]), "text_preview": result["text"][:300], "text_tail": result["text"][-200:] if len(result["text"]) > 200 else ""}, hyp="H23,H26", loc="website_monitor.py:scrape")
+                _dbg("website scrape extracted", {"url": article_url, "title": result["title"][:80], "text_len": len(result["text"]), "text_preview": result["text"][:300], "text_tail": result["text"][-200:] if len(result["text"]) > 200 else "", "api_type": "dict" if _get else "Document"}, hyp="H23,H26", loc="website_monitor.py:scrape")
                 # #endregion
 
         if result["text"]:
