@@ -1,5 +1,6 @@
 """Monitor tracked YouTube channels for new videos and retrieve transcripts."""
 
+import http.cookiejar
 import json
 import logging
 import re
@@ -124,6 +125,30 @@ def get_channel_videos(channel_id: str) -> List[Dict[str, str]]:
 _COOKIES_PATH = Path(__file__).parent.parent / "data" / "youtube_cookies.txt"
 
 
+def _load_youtube_cookies() -> http.cookiejar.MozillaCookieJar:
+    """Load YouTube cookies from data/youtube_cookies.txt (Netscape format)."""
+    jar = http.cookiejar.MozillaCookieJar()
+    if _COOKIES_PATH.exists():
+        try:
+            jar.load(str(_COOKIES_PATH), ignore_discard=True, ignore_expires=True)
+        except Exception as exc:
+            logger.warning("[YOUTUBE] Could not load cookies: %s", exc)
+    return jar
+
+
+def _make_authenticated_session() -> requests.Session:
+    """Create a requests.Session pre-loaded with YouTube cookies and headers."""
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    session.cookies.update(COOKIES)
+    jar = _load_youtube_cookies()
+    if len(jar) > 0:
+        for cookie in jar:
+            session.cookies.set_cookie(cookie)
+        logger.info("[YOUTUBE] Loaded %d cookies from file", len(jar))
+    return session
+
+
 # ---- transcript fallback chain ----
 
 
@@ -156,29 +181,18 @@ def get_transcript(video_id: str) -> Optional[str]:
 
 
 def _transcript_via_api(video_id: str) -> Optional[str]:
-    """Method 1: youtube_transcript_api with optional cookie authentication.
+    """Method 1: youtube_transcript_api with a pre-authenticated requests.Session.
 
-    Supports both v1.x (instance-based) and v0.x (class-method) APIs.
+    v1.x disabled built-in cookie loading, but accepts an http_client (Session)
+    with cookies already attached — this bypasses the disabled feature.
     """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
-        cookie_path = str(_COOKIES_PATH) if _COOKIES_PATH.exists() else None
-
-        # v1.x API: cookies in constructor, instance .fetch()
-        try:
-            api = YouTubeTranscriptApi(cookies=cookie_path) if cookie_path else YouTubeTranscriptApi()
-            transcript = api.fetch(video_id)
-            lines = [snippet.text for snippet in transcript]
-            text = "\n".join(lines)
-            return text if text.strip() else None
-        except TypeError:
-            pass
-
-        # v0.x API: class method, cookies as keyword arg
-        kwargs = {"cookies": cookie_path} if cookie_path else {}
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, **kwargs)
-        lines = [entry["text"] for entry in transcript]
+        session = _make_authenticated_session()
+        api = YouTubeTranscriptApi(http_client=session)
+        transcript = api.fetch(video_id)
+        lines = [snippet.text for snippet in transcript]
         text = "\n".join(lines)
         return text if text.strip() else None
     except Exception as exc:
@@ -187,10 +201,11 @@ def _transcript_via_api(video_id: str) -> Optional[str]:
 
 
 def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
-    """Method 2: fetch YouTube video page, extract caption track URL, fetch XML."""
+    """Method 2: fetch YouTube video page with cookies, extract caption track URL, fetch XML."""
     try:
+        session = _make_authenticated_session()
         url = f"https://www.youtube.com/watch?v={video_id}"
-        resp = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=20)
+        resp = session.get(url, timeout=20)
         if resp.status_code != 200:
             logger.info("[YOUTUBE] Page scrape: HTTP %d for %s", resp.status_code, video_id)
             return None
@@ -214,7 +229,7 @@ def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
             )
             return None
 
-        cap_resp = requests.get(base_url, headers=HEADERS, timeout=15)
+        cap_resp = session.get(base_url, timeout=15)
         if cap_resp.status_code != 200:
             logger.info("[YOUTUBE] Page scrape: caption fetch HTTP %d for %s", cap_resp.status_code, video_id)
             return None
