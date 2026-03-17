@@ -333,37 +333,10 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             continue
         filtered_items.append(item)
 
-    # FIX-3: Two-level round-robin — first across platforms (substack,
-    # youtube, website) then across individual sources within each platform.
-    # This prevents a platform with many sources from monopolizing the cap.
-    from collections import defaultdict
-    _plat_src: dict[str, dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
-    for item in filtered_items:
-        _plat_src[item["platform"]][item["source"]].append(item)
-
-    _plat_interleaved: dict[str, List[dict]] = {}
-    for platform, src_map in _plat_src.items():
-        flat: List[dict] = []
-        _depth = max((len(v) for v in src_map.values()), default=0)
-        for d in range(_depth):
-            for src in src_map:
-                if d < len(src_map[src]):
-                    flat.append(src_map[src][d])
-        _plat_interleaved[platform] = flat
-
-    interleaved: List[dict] = []
-    _platforms = list(_plat_interleaved.keys())
-    _max_len = max((len(v) for v in _plat_interleaved.values()), default=0)
-    for i in range(_max_len):
-        for p in _platforms:
-            if i < len(_plat_interleaved[p]):
-                interleaved.append(_plat_interleaved[p][i])
-    filtered_items = interleaved[:15]
-
-    _final_counts = Counter(item["platform"] for item in filtered_items)
+    _after_counts = Counter(item["platform"] for item in filtered_items)
     logger.info(
-        "[CHECK] After round-robin cap: %s (total %d) | platforms: %s",
-        dict(_final_counts), len(filtered_items), _platforms,
+        "[CHECK] After 3-strike filter: %s (total %d)",
+        dict(_after_counts), len(filtered_items),
     )
 
     # FIX-2: Increment strike counter for every item we are about to show
@@ -373,7 +346,6 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
     all_items = filtered_items
 
     if not all_items:
-        # FIX-3: Explicit "nothing today" message instead of silence
         await context.bot.send_message(chat_id, "No new content to show today.")
         return
 
