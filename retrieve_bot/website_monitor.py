@@ -156,6 +156,15 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
         downloaded = trafilatura.fetch_url(article_url)
         # #region agent log
         _dbg("website scrape trafilatura", {"url": article_url, "downloaded_len": len(downloaded) if downloaded else 0, "has_login_gate": ("sign in" in (downloaded or "").lower() or "log in" in (downloaded or "").lower()), "has_transcript_link": ("access the full transcript" in (downloaded or "").lower())}, hyp="H23,H24,H25,H26", loc="website_monitor.py:scrape")
+        if downloaded:
+            import re as _re
+            _next_match = _re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', downloaded, _re.DOTALL)
+            _json_ld_matches = _re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', downloaded, _re.DOTALL)
+            _transcript_in_html = "transcript" in downloaded.lower()
+            _next_len = len(_next_match.group(1)) if _next_match else 0
+            _next_preview = _next_match.group(1)[:500] if _next_match else ""
+            _next_has_transcript = ("transcript" in _next_match.group(1).lower()) if _next_match else False
+            _dbg("website HTML deep scan", {"url": article_url, "has_NEXT_DATA": bool(_next_match), "NEXT_DATA_len": _next_len, "NEXT_DATA_preview": _next_preview, "NEXT_DATA_has_transcript": _next_has_transcript, "json_ld_count": len(_json_ld_matches), "json_ld_lens": [len(m) for m in _json_ld_matches], "transcript_in_raw_html": _transcript_in_html, "html_text_chars": len(_re.sub(r'<[^>]+>', '', downloaded))}, hyp="H27,H28,H29", loc="website_monitor.py:deep_scan")
         # #endregion
         if downloaded:
             extracted = trafilatura.bare_extraction(
