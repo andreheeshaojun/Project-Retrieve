@@ -229,16 +229,65 @@ def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
             )
             return None
 
-        cap_resp = session.get(base_url, timeout=15)
-        if cap_resp.status_code != 200:
-            logger.info("[YOUTUBE] Page scrape: caption fetch HTTP %d for %s", cap_resp.status_code, video_id)
-            return None
+        logger.info("[YOUTUBE] Page scrape: got caption URL for %s", video_id)
 
-        root = ElementTree.fromstring(cap_resp.text)
+        # Try json3 format first (more reliable than XML from cloud IPs)
+        json3_url = re.sub(r'&fmt=\w+', '', base_url) + "&fmt=json3"
+        text = _fetch_captions_json3(session, json3_url, video_id)
+        if text:
+            return text
+
+        # Fall back to default XML/srv3 format
+        text = _fetch_captions_xml(session, base_url, video_id)
+        if text:
+            return text
+
+        return None
+    except Exception as exc:
+        logger.info("[YOUTUBE] Page scrape failed for %s: %s", video_id, exc)
+        return None
+
+
+def _fetch_captions_json3(session: requests.Session, url: str, video_id: str) -> Optional[str]:
+    """Fetch captions in json3 format and extract text."""
+    try:
+        resp = session.get(url, timeout=15)
+        if resp.status_code != 200:
+            logger.info("[YOUTUBE] json3 caption HTTP %d for %s", resp.status_code, video_id)
+            return None
+        if not resp.text.strip():
+            logger.info("[YOUTUBE] json3 caption empty response for %s", video_id)
+            return None
+        data = json.loads(resp.text)
+        lines: List[str] = []
+        for event in data.get("events", []):
+            for seg in event.get("segs", []):
+                text = seg.get("utf8", "").strip()
+                if text and text != "\n":
+                    lines.append(text)
+        return "\n".join(lines) if lines else None
+    except Exception as exc:
+        logger.info("[YOUTUBE] json3 parse failed for %s: %s", video_id, exc)
+        return None
+
+
+def _fetch_captions_xml(session: requests.Session, url: str, video_id: str) -> Optional[str]:
+    """Fetch captions in default XML/srv3 format and extract text."""
+    try:
+        resp = session.get(url, timeout=15)
+        if resp.status_code != 200:
+            logger.info("[YOUTUBE] XML caption HTTP %d for %s", resp.status_code, video_id)
+            return None
+        body = resp.text.strip()
+        if not body:
+            logger.info("[YOUTUBE] XML caption empty response for %s", video_id)
+            return None
+        root = ElementTree.fromstring(body)
         lines = [unescape(elem.text) for elem in root.iter("text") if elem.text]
         return "\n".join(lines) if lines else None
     except Exception as exc:
-        logger.info("[YOUTUBE] Page scrape failed for %s: %s", video_id, exc)
+        logger.info("[YOUTUBE] XML parse failed for %s: %s (first 100 chars: %s)",
+                     video_id, exc, resp.text[:100] if 'resp' in dir() else 'N/A')
         return None
 
 
