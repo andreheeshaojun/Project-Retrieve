@@ -156,17 +156,29 @@ def get_transcript(video_id: str) -> Optional[str]:
 
 
 def _transcript_via_api(video_id: str) -> Optional[str]:
-    """Method 1: youtube_transcript_api with optional cookie authentication."""
+    """Method 1: youtube_transcript_api with optional cookie authentication.
+
+    Supports both v1.x (instance-based) and v0.x (class-method) APIs.
+    """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
-        if _COOKIES_PATH.exists():
-            api = YouTubeTranscriptApi(cookies=str(_COOKIES_PATH))
-        else:
-            api = YouTubeTranscriptApi()
+        cookie_path = str(_COOKIES_PATH) if _COOKIES_PATH.exists() else None
 
-        transcript = api.fetch(video_id)
-        lines = [snippet.text for snippet in transcript]
+        # v1.x API: cookies in constructor, instance .fetch()
+        try:
+            api = YouTubeTranscriptApi(cookies=cookie_path) if cookie_path else YouTubeTranscriptApi()
+            transcript = api.fetch(video_id)
+            lines = [snippet.text for snippet in transcript]
+            text = "\n".join(lines)
+            return text if text.strip() else None
+        except TypeError:
+            pass
+
+        # v0.x API: class method, cookies as keyword arg
+        kwargs = {"cookies": cookie_path} if cookie_path else {}
+        transcript = YouTubeTranscriptApi.get_transcript(video_id, **kwargs)
+        lines = [entry["text"] for entry in transcript]
         text = "\n".join(lines)
         return text if text.strip() else None
     except Exception as exc:
@@ -183,34 +195,28 @@ def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
             logger.info("[YOUTUBE] Page scrape: HTTP %d for %s", resp.status_code, video_id)
             return None
 
-        match = re.search(r'ytInitialPlayerResponse\s*=\s*', resp.text)
-        if not match:
-            logger.info("[YOUTUBE] Page scrape: no ytInitialPlayerResponse for %s", video_id)
-            return None
+        html = resp.text
 
-        decoder = json.JSONDecoder()
-        player_resp, _ = decoder.raw_decode(resp.text, match.end())
+        # Strategy A: parse ytInitialPlayerResponse JSON blob
+        base_url = _extract_caption_url_from_player_response(html, video_id)
 
-        tracks = (
-            player_resp
-            .get("captions", {})
-            .get("playerCaptionsTracklistRenderer", {})
-            .get("captionTracks", [])
-        )
-        if not tracks:
-            logger.info("[YOUTUBE] Page scrape: no captionTracks for %s", video_id)
-            return None
-
-        track = next(
-            (t for t in tracks if t.get("languageCode", "").startswith("en")),
-            tracks[0],
-        )
-        base_url = track.get("baseUrl", "")
+        # Strategy B: regex for captionTracks directly in raw HTML
         if not base_url:
+            base_url = _extract_caption_url_from_raw_html(html, video_id)
+
+        if not base_url:
+            has_player = "ytInitialPlayerResponse" in html
+            has_consent = "consent.youtube.com" in html
+            logger.info(
+                "[YOUTUBE] Page scrape: no caption URL for %s "
+                "(has_player=%s, consent_page=%s, page_len=%d)",
+                video_id, has_player, has_consent, len(html),
+            )
             return None
 
         cap_resp = requests.get(base_url, headers=HEADERS, timeout=15)
         if cap_resp.status_code != 200:
+            logger.info("[YOUTUBE] Page scrape: caption fetch HTTP %d for %s", cap_resp.status_code, video_id)
             return None
 
         root = ElementTree.fromstring(cap_resp.text)
@@ -219,6 +225,50 @@ def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
     except Exception as exc:
         logger.info("[YOUTUBE] Page scrape failed for %s: %s", video_id, exc)
         return None
+
+
+def _extract_caption_url_from_player_response(html: str, video_id: str) -> Optional[str]:
+    """Parse ytInitialPlayerResponse JSON to find an English caption track URL."""
+    match = re.search(r'ytInitialPlayerResponse\s*=\s*', html)
+    if not match:
+        return None
+    try:
+        decoder = json.JSONDecoder()
+        player_resp, _ = decoder.raw_decode(html, match.end())
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    tracks = (
+        player_resp
+        .get("captions", {})
+        .get("playerCaptionsTracklistRenderer", {})
+        .get("captionTracks", [])
+    )
+    if not tracks:
+        status = player_resp.get("playabilityStatus", {}).get("status", "?")
+        logger.info("[YOUTUBE] Page scrape: playerResponse has no captions (status=%s) for %s", status, video_id)
+        return None
+
+    track = next(
+        (t for t in tracks if t.get("languageCode", "").startswith("en")),
+        tracks[0],
+    )
+    return track.get("baseUrl")
+
+
+def _extract_caption_url_from_raw_html(html: str, video_id: str) -> Optional[str]:
+    """Regex fallback: find a timedtext baseUrl directly in the page HTML."""
+    match = re.search(
+        r'"baseUrl"\s*:\s*"(https://www\.youtube\.com/api/timedtext[^"]+)"',
+        html,
+    )
+    if not match:
+        return None
+    raw_url = match.group(1).replace("\\u0026", "&")
+    if "lang=en" in raw_url or "lang=a.en" in raw_url:
+        return raw_url
+    # Accept any language if English not found
+    return raw_url
 
 
 def _transcript_via_web_fallback(video_id: str) -> Optional[str]:
@@ -231,13 +281,17 @@ def _transcript_via_web_fallback(video_id: str) -> Optional[str]:
     Constraints: no documented rate limits for the public site, but heavy
     automated use may be blocked. This is a last-resort fallback.
     """
+    _BROWSER_HEADERS = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://youtubetotranscript.com/",
+        "Connection": "keep-alive",
+    }
     try:
         url = f"https://youtubetotranscript.com/transcript?v={video_id}&current_language_code=en"
-        resp = requests.get(
-            url,
-            headers={**HEADERS, "Accept": "text/html"},
-            timeout=20,
-        )
+        resp = requests.get(url, headers=_BROWSER_HEADERS, timeout=20)
         if resp.status_code != 200:
             logger.info("[YOUTUBE] Web fallback: HTTP %d for %s", resp.status_code, video_id)
             return None
@@ -256,7 +310,7 @@ def _transcript_via_web_fallback(video_id: str) -> Optional[str]:
                     seg.get("text", "") if isinstance(seg, dict) else str(seg)
                     for seg in segments
                 ]
-                text = "\n".join(l for l in lines if l.strip())
+                text = "\n".join(ln for ln in lines if ln.strip())
                 if text:
                     return text
             body_text = props.get("body") or props.get("text") or ""
