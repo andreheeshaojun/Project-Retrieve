@@ -1,9 +1,23 @@
 """Generate clean PDFs from Substack articles, YouTube transcripts, and website articles."""
 
+import io
+import logging
 from pathlib import Path
 
+import requests
 from bs4 import BeautifulSoup
 from fpdf import FPDF
+from PIL import Image
+
+logger = logging.getLogger(__name__)
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
 
 class _RetrievePDF(FPDF):
@@ -48,44 +62,105 @@ def _sanitize(text: str) -> str:
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
-def _html_to_paragraphs(html: str) -> list[str]:
-    """Convert HTML to a list of plain-text paragraphs."""
+def _html_to_elements(html: str) -> list[dict]:
+    """Convert HTML to an ordered list of text paragraphs and image references."""
     if not html:
         return []
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "svg"]):
         tag.decompose()
 
-    paragraphs: list[str] = []
-    block_tags = ["h1", "h2", "h3", "h4", "p", "li", "blockquote", "div"]
-    for el in soup.find_all(block_tags):
+    elements: list[dict] = []
+    seen_imgs: set[str] = set()
+
+    tags = ["h1", "h2", "h3", "h4", "p", "li", "blockquote", "div", "figure", "img"]
+    for el in soup.find_all(tags):
+        if el.name == "img":
+            src = el.get("src", "")
+            if src and src not in seen_imgs and not src.startswith("data:"):
+                seen_imgs.add(src)
+                elements.append({"type": "image", "src": src})
+            continue
+
+        if el.name == "figure":
+            img = el.find("img")
+            if img:
+                src = img.get("src", "")
+                if src and src not in seen_imgs and not src.startswith("data:"):
+                    seen_imgs.add(src)
+                    elements.append({"type": "image", "src": src})
+            cap = el.find("figcaption")
+            if cap and cap.get_text(strip=True):
+                elements.append({"type": "text", "content": cap.get_text(strip=True)})
+            continue
+
+        for img in el.find_all("img", recursive=False):
+            src = img.get("src", "")
+            if src and src not in seen_imgs and not src.startswith("data:"):
+                seen_imgs.add(src)
+                elements.append({"type": "image", "src": src})
+
         txt = el.get_text(strip=True)
         if not txt:
             continue
         tag = el.name
         if tag in ("h1", "h2"):
-            paragraphs.append(f"## {txt}")
+            elements.append({"type": "text", "content": f"## {txt}"})
         elif tag in ("h3", "h4"):
-            paragraphs.append(f"### {txt}")
+            elements.append({"type": "text", "content": f"### {txt}"})
         elif tag == "blockquote":
-            paragraphs.append(f"> {txt}")
+            elements.append({"type": "text", "content": f"> {txt}"})
         elif tag == "li":
-            paragraphs.append(f"  - {txt}")
+            elements.append({"type": "text", "content": f"  - {txt}"})
         else:
-            paragraphs.append(txt)
+            elements.append({"type": "text", "content": txt})
 
-    if not paragraphs:
-        paragraphs = [
-            line.strip()
+    if not elements:
+        elements = [
+            {"type": "text", "content": line.strip()}
             for line in soup.get_text(separator="\n").split("\n")
             if line.strip()
         ]
-    return paragraphs
+    return elements
 
 
-def _write_body(pdf: _RetrievePDF, paragraphs: list[str]):
-    """Render a list of plain-text paragraphs into the PDF body."""
-    for para in paragraphs:
+def _fetch_image(src: str, max_width: int = 1200) -> io.BytesIO | None:
+    """Download an image, convert to compressed JPEG, return as BytesIO."""
+    try:
+        resp = requests.get(src, timeout=15, headers=_HEADERS)
+        resp.raise_for_status()
+        if len(resp.content) > 10_000_000:
+            return None
+        img = Image.open(io.BytesIO(resp.content))
+        if img.width < 50 or img.height < 50:
+            return None
+        img = img.convert("RGB")
+        if img.width > max_width:
+            ratio = max_width / img.width
+            img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75, optimize=True)
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+
+def _write_body(pdf: _RetrievePDF, elements: list[dict]):
+    """Render text paragraphs and images into the PDF body."""
+    for el in elements:
+        if el["type"] == "image":
+            img_data = _fetch_image(el["src"])
+            if img_data:
+                usable_w = pdf.w - pdf.l_margin - pdf.r_margin
+                try:
+                    pdf.image(img_data, w=usable_w)
+                except Exception:
+                    logger.debug("Could not embed image: %s", el["src"][:80])
+                pdf.ln(4)
+            continue
+
+        para = el.get("content", "")
         if not para:
             pdf.ln(4)
             continue
@@ -166,7 +241,7 @@ def generate_substack_pdf(
     # body
     pdf.set_font("Helvetica", "", 11)
     pdf.set_text_color(40, 40, 40)
-    _write_body(pdf, _html_to_paragraphs(html_content))
+    _write_body(pdf, _html_to_elements(html_content))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pdf.output(str(output_path))
