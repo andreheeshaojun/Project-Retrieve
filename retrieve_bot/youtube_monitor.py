@@ -101,9 +101,31 @@ def resolve_channel_id(channel_input: str) -> Optional[str]:
 
 
 def get_channel_videos(channel_id: str) -> List[Dict[str, str]]:
-    """Parse the YouTube RSS feed for a channel's recent uploads."""
-    feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    """Parse the YouTube RSS feed for a channel's recent long-form uploads.
+
+    Uses the UULF (long-form) playlist so Shorts are excluded at the source,
+    giving a full 15 real videos instead of a mix.  Falls back to the regular
+    channel feed + per-video Shorts check if the UULF feed is empty.
+    """
+    suffix = channel_id[2:]
+    uulf_playlist = f"UULF{suffix}"
+    feed_url = f"https://www.youtube.com/feeds/videos.xml?playlist_id={uulf_playlist}"
     feed = feedparser.parse(feed_url)
+
+    # #region agent log
+    feed_source = "UULF"
+    # #endregion
+
+    if not feed.entries:
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        feed = feedparser.parse(feed_url)
+        # #region agent log
+        feed_source = "channel_id_fallback"
+        # #endregion
+
+    # #region agent log
+    _dbg("yt feed_source", {"channel_id": channel_id, "feed_source": feed_source, "playlist_id": uulf_playlist, "entry_count": len(feed.entries)}, hyp="H17", loc="youtube_monitor.py:get_channel_videos")
+    # #endregion
 
     videos: List[Dict[str, str]] = []
     for entry in feed.entries:
@@ -168,19 +190,11 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
             # #endregion
 
             # #region agent log
-            shorts_skipped = []
             kept_videos = []
             # #endregion
             for video in videos:
                 post_id = f"youtube_{video['video_id']}"
                 if is_post_seen(post_id):
-                    continue
-
-                if _is_short(video["video_id"]):
-                    # #region agent log
-                    shorts_skipped.append({"id": video["video_id"], "title": video["title"]})
-                    # #endregion
-                    logger.info("Skipping YouTube Short: %s – %s", video["video_id"], video["title"])
                     continue
 
                 # #region agent log
@@ -199,7 +213,7 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
                     }
                 )
             # #region agent log
-            _dbg("yt shorts_filter", {"channel": channel_input, "channel_id": channel_id, "shorts_skipped": shorts_skipped, "kept_videos": kept_videos}, hyp="H14,H15,H16", loc="youtube_monitor.py:check")
+            _dbg("yt result", {"channel": channel_input, "channel_id": channel_id, "kept_count": len(kept_videos), "kept_videos": kept_videos}, hyp="H17", loc="youtube_monitor.py:check")
             # #endregion
         except Exception as exc:
             # #region agent log
