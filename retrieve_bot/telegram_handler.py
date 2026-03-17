@@ -318,8 +318,19 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             continue
         filtered_items.append(item)
 
-    # FIX-3: Strict top-15 cap — never backfill older content
-    filtered_items = filtered_items[:15]
+    # FIX-3: Round-robin interleave across sources so the top-15 cap is fair.
+    # Without this, the first source checked would monopolize all 15 slots.
+    from collections import defaultdict
+    _src_buckets: dict[str, List[dict]] = defaultdict(list)
+    for item in filtered_items:
+        _src_buckets[f"{item['platform']}_{item['source']}"].append(item)
+    interleaved: List[dict] = []
+    _max_depth = max((len(v) for v in _src_buckets.values()), default=0)
+    for depth in range(_max_depth):
+        for src_key in _src_buckets:
+            if depth < len(_src_buckets[src_key]):
+                interleaved.append(_src_buckets[src_key][depth])
+    filtered_items = interleaved[:15]
 
     # FIX-2: Increment strike counter for every item we are about to show
     for item in filtered_items:
