@@ -7,12 +7,27 @@ from time import sleep
 from typing import Any, Dict, List
 from urllib.parse import urljoin, urlparse
 
+import http.cookiejar
+from pathlib import Path
+
 import requests
 from bs4 import BeautifulSoup
 
 from retrieve_bot.config import is_post_seen, mark_post_seen
 
 logger = logging.getLogger(__name__)
+
+_COOKIES_PATH = Path(__file__).parent.parent / "data" / "website_cookies.txt"
+
+
+def _load_cookie_jar() -> http.cookiejar.MozillaCookieJar:
+    jar = http.cookiejar.MozillaCookieJar()
+    if _COOKIES_PATH.exists():
+        try:
+            jar.load(str(_COOKIES_PATH), ignore_discard=True, ignore_expires=True)
+        except Exception as exc:
+            logger.warning("Could not load website cookies: %s", exc)
+    return jar
 
 # #region agent log
 import json as _json, time as _time
@@ -153,9 +168,16 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
     try:
         import trafilatura
 
-        downloaded = trafilatura.fetch_url(article_url)
+        jar = _load_cookie_jar()
+        cookies_used = len(jar) > 0
+        if cookies_used:
+            resp = requests.get(article_url, headers=HEADERS, cookies=jar, timeout=30)
+            resp.raise_for_status()
+            downloaded = resp.text
+        else:
+            downloaded = trafilatura.fetch_url(article_url)
         # #region agent log
-        _dbg("website scrape trafilatura", {"url": article_url, "downloaded_len": len(downloaded) if downloaded else 0, "has_login_gate": ("sign in" in (downloaded or "").lower() or "log in" in (downloaded or "").lower()), "has_transcript_link": ("access the full transcript" in (downloaded or "").lower())}, hyp="H23,H24,H25,H26", loc="website_monitor.py:scrape")
+        _dbg("website scrape trafilatura", {"url": article_url, "downloaded_len": len(downloaded) if downloaded else 0, "has_login_gate": ("sign in" in (downloaded or "").lower() or "log in" in (downloaded or "").lower()), "has_transcript_link": ("access the full transcript" in (downloaded or "").lower()), "cookies_used": cookies_used, "cookie_count": len(jar)}, hyp="H23,H24,H25,H26,H33", loc="website_monitor.py:scrape")
         if downloaded:
             import re as _re
             from bs4 import BeautifulSoup as _BS
