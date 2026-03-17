@@ -34,6 +34,19 @@ HEADERS = {
 COOKIES = {"CONSENT": "PENDING+987", "SOCS": "CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg"}
 
 
+def _is_short(video_id: str) -> bool:
+    """Return True if *video_id* is a YouTube Short (not a regular video)."""
+    try:
+        resp = requests.head(
+            f"https://www.youtube.com/shorts/{video_id}",
+            headers=HEADERS, cookies=COOKIES,
+            timeout=8, allow_redirects=True,
+        )
+        return resp.ok and "/shorts/" in resp.url
+    except Exception:
+        return False
+
+
 def resolve_channel_id(channel_input: str) -> Optional[str]:
     """Resolve a YouTube @handle / username / URL to a channel ID (UCxxxx)."""
     channel_input = channel_input.strip()
@@ -154,11 +167,25 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
             _dbg("yt channel videos", {"channel": channel_input, "total_videos": len(videos), "already_seen": _seen_count}, hyp="H6,H7", loc="youtube_monitor.py:check")
             # #endregion
 
+            # #region agent log
+            shorts_skipped = []
+            kept_videos = []
+            # #endregion
             for video in videos:
                 post_id = f"youtube_{video['video_id']}"
                 if is_post_seen(post_id):
                     continue
 
+                if _is_short(video["video_id"]):
+                    # #region agent log
+                    shorts_skipped.append({"id": video["video_id"], "title": video["title"]})
+                    # #endregion
+                    logger.info("Skipping YouTube Short: %s – %s", video["video_id"], video["title"])
+                    continue
+
+                # #region agent log
+                kept_videos.append({"id": video["video_id"], "title": video["title"]})
+                # #endregion
                 new_videos.append(
                     {
                         "id": post_id,
@@ -171,6 +198,9 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
                         "video_id": video["video_id"],
                     }
                 )
+            # #region agent log
+            _dbg("yt shorts_filter", {"channel": channel_input, "channel_id": channel_id, "shorts_skipped": shorts_skipped, "kept_videos": kept_videos}, hyp="H14,H15,H16", loc="youtube_monitor.py:check")
+            # #endregion
         except Exception as exc:
             # #region agent log
             _dbg("yt channel EXCEPTION", {"channel": channel_input, "error": str(exc)}, hyp="H6", loc="youtube_monitor.py:check")
