@@ -16,17 +16,6 @@ if SUBSTACK_API_DIR not in sys.path:
 
 logger = logging.getLogger(__name__)
 
-# #region agent log
-import json as _json, time as _time
-_DBG_LOG = Path(__file__).parent.parent / "debug-f972e5.log"
-def _dbg(msg, data=None, hyp="", loc=""):
-    try:
-        with open(_DBG_LOG, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId":"f972e5","timestamp":int(_time.time()*1000),"location":loc,"message":msg,"data":data or {},"hypothesisId":hyp}) + "\n")
-    except Exception:
-        pass
-# #endregion
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -86,21 +75,10 @@ def fetch_recent_posts_raw(newsletter_url: str, limit: int = 15) -> list:
     endpoint = f"{newsletter_url}/api/v1/archive?sort=new&offset=0&limit={limit}"
     resp = requests.get(endpoint, headers=HEADERS, timeout=30)
     sleep(2)
-
-    # #region agent log
-    _dbg("substack fetch response", {
-        "endpoint": endpoint, "status": resp.status_code,
-        "final_url": resp.url, "redirected": resp.url != endpoint,
-    }, hyp="H8", loc="substack_monitor.py:fetch")
-    # #endregion
-
     resp.raise_for_status()
 
     if "/api/v1/archive" not in resp.url:
         pub_url = _resolve_publication_url(resp.url)
-        # #region agent log
-        _dbg("substack profile resolved", {"profile": resp.url, "publication_url": pub_url}, hyp="H8", loc="substack_monitor.py:resolve_pub")
-        # #endregion
         if not pub_url:
             raise RuntimeError(f"Could not find publication URL from {resp.url}")
         retry_url = f"{pub_url}/api/v1/archive?sort=new&offset=0&limit={limit}"
@@ -119,10 +97,6 @@ def check_substack_for_new_posts(usernames: List[str]) -> List[Dict[str, Any]]:
         try:
             url = normalize_substack_url(username)
             raw_posts = fetch_recent_posts_raw(url, limit=15)
-            # #region agent log
-            _unseen = sum(1 for p in raw_posts if not is_post_seen(f"substack_{p.get('id', p.get('slug', ''))}"))
-            _dbg("substack source", {"username": username, "fetched": len(raw_posts), "unseen": _unseen}, hyp="H8,H9", loc="substack_monitor.py:check")
-            # #endregion
 
             for post_data in raw_posts:
                 post_id_val = post_data.get("id", post_data.get("slug", ""))
@@ -149,9 +123,6 @@ def check_substack_for_new_posts(usernames: List[str]) -> List[Dict[str, Any]]:
                 )
 
         except Exception as exc:
-            # #region agent log
-            _dbg("substack source EXCEPTION", {"username": username, "error": str(exc)}, hyp="H8", loc="substack_monitor.py:check")
-            # #endregion
             logger.warning("Substack check failed for %s: %s", username, exc)
 
     return new_posts

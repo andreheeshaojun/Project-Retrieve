@@ -49,17 +49,6 @@ from retrieve_bot.website_monitor import (
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# #region agent log
-import json as _json, time as _time
-_DBG_LOG = Path(__file__).parent.parent / "debug-f972e5.log"
-def _dbg(msg, data=None, hyp="", loc=""):
-    try:
-        with open(_DBG_LOG, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId":"f972e5","timestamp":int(_time.time()*1000),"location":loc,"message":msg,"data":data or {},"hypothesisId":hyp}) + "\n")
-    except Exception:
-        pass
-# #endregion
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_ID = 1625301518
 
@@ -268,9 +257,6 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await _run_content_check(context)
     except Exception as _exc:
-        # #region agent log
-        _dbg("cmd_check UNCAUGHT EXCEPTION", {"error": str(_exc), "type": type(_exc).__name__}, hyp="H1,H2,H4", loc="telegram_handler.py:cmd_check")
-        # #endregion
         await update.message.reply_text(f"Check failed: {_exc}")
 
 
@@ -279,22 +265,11 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
     global pending_items, selected_items, poll_to_item_ids
 
     chat_id = config.get_chat_id()
-    # #region agent log
-    _dbg("_run_content_check entry", {"chat_id": chat_id}, hyp="H3", loc="telegram_handler.py:_run_content_check")
-    # #endregion
     if not chat_id:
         logger.warning("No chat_id stored – user must /start the bot first.")
         return
 
     all_items: List[dict] = []
-
-    # #region agent log
-    _dbg("source counts", {
-        "substack": len(config.get_sources("substack")),
-        "youtube": len(config.get_sources("youtube")),
-        "websites": len(config.get_sources("websites")),
-    }, hyp="H5", loc="telegram_handler.py:_run_content_check")
-    # #endregion
 
     # --- Substack ---
     substacks = config.get_sources("substack")
@@ -305,13 +280,7 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
                 None, check_substack_for_new_posts, substacks
             )
             all_items.extend(items)
-            # #region agent log
-            _dbg("substack check done", {"count": len(items)}, hyp="H2", loc="telegram_handler.py:substack")
-            # #endregion
         except Exception as exc:
-            # #region agent log
-            _dbg("substack check EXCEPTION", {"error": str(exc)}, hyp="H2", loc="telegram_handler.py:substack")
-            # #endregion
             await context.bot.send_message(chat_id, f"Substack error: {exc}")
 
     # --- YouTube ---
@@ -323,13 +292,7 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
                 None, check_youtube_for_new_videos, youtubes
             )
             all_items.extend(items)
-            # #region agent log
-            _dbg("youtube check done", {"count": len(items)}, hyp="H2", loc="telegram_handler.py:youtube")
-            # #endregion
         except Exception as exc:
-            # #region agent log
-            _dbg("youtube check EXCEPTION", {"error": str(exc)}, hyp="H2", loc="telegram_handler.py:youtube")
-            # #endregion
             await context.bot.send_message(chat_id, f"YouTube error: {exc}")
 
     # --- Websites ---
@@ -341,13 +304,7 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
                 None, check_websites_for_new_content, websites
             )
             all_items.extend(items)
-            # #region agent log
-            _dbg("website check done", {"count": len(items)}, hyp="H2", loc="telegram_handler.py:website")
-            # #endregion
         except Exception as exc:
-            # #region agent log
-            _dbg("website check EXCEPTION", {"error": str(exc)}, hyp="H2", loc="telegram_handler.py:website")
-            # #endregion
             await context.bot.send_message(chat_id, f"Website error: {exc}")
 
     config.update_last_check()
@@ -379,10 +336,7 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             summary_lines.append(f"   {item['subtitle'][:80]}")
         summary_lines.append(f"   {item['url']}")
         summary_lines.append("")
-    # #region agent log
     _summary_text = "\n".join(summary_lines)
-    _dbg("summary message built", {"length": len(_summary_text), "item_count": len(all_items)}, hyp="H1", loc="telegram_handler.py:summary")
-    # #endregion
 
     _MSG_LIMIT = 4096
     if len(_summary_text) <= _MSG_LIMIT:
@@ -403,9 +357,6 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
                 _chunk += _entry
         if _chunk:
             await context.bot.send_message(chat_id, _chunk)
-    # #region agent log
-    _dbg("summary messages sent OK", {"total_len": len(_summary_text)}, hyp="H1", loc="telegram_handler.py:summary")
-    # #endregion
 
     # Send poll(s) – Telegram allows max 10 options per poll
     options: List[str] = []
@@ -440,10 +391,6 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
         if total_batches > 1:
             question = f"Select content to save ({batch_num}/{total_batches}):"
 
-        # #region agent log
-        _opt_lengths = [len(o) for o in batch_opts]
-        _dbg("sending poll batch", {"batch_num": batch_num, "num_opts": len(batch_opts), "opt_lengths": _opt_lengths, "question_len": len(question)}, hyp="H4", loc="telegram_handler.py:poll")
-        # #endregion
         try:
             poll_msg = await context.bot.send_poll(
                 chat_id,
@@ -454,9 +401,6 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             )
             poll_to_item_ids[poll_msg.poll.id] = batch_ids
         except Exception as _exc:
-            # #region agent log
-            _dbg("poll send FAILED", {"error": str(_exc), "batch_num": batch_num, "opt_lengths": _opt_lengths}, hyp="H4", loc="telegram_handler.py:poll")
-            # #endregion
             raise
 
     # Confirm button

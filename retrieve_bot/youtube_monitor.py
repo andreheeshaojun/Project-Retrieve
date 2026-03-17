@@ -12,18 +12,6 @@ from retrieve_bot.config import is_post_seen
 
 logger = logging.getLogger(__name__)
 
-# #region agent log
-import json as _json, time as _time
-from pathlib import Path as _Path
-_DBG_LOG = _Path(__file__).parent.parent / "debug-f972e5.log"
-def _dbg(msg, data=None, hyp="", loc=""):
-    try:
-        with open(_DBG_LOG, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId":"f972e5","timestamp":int(_time.time()*1000),"location":loc,"message":msg,"data":data or {},"hypothesisId":hyp}) + "\n")
-    except Exception:
-        pass
-# #endregion
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -79,18 +67,7 @@ def resolve_channel_id(channel_input: str) -> Optional[str]:
                 timeout=15, allow_redirects=True,
             )
             if resp.status_code != 200:
-                # #region agent log
-                _dbg("yt resolve attempt", {"url": url, "status": resp.status_code, "resp_len": len(resp.text)}, hyp="H10", loc="youtube_monitor.py:resolve")
-                # #endregion
                 continue
-            # #region agent log
-            all_matches = {}
-            for name, pat in _uc_patterns:
-                m = re.search(pat, resp.text)
-                if m:
-                    all_matches[name] = m.group(1)
-            _dbg("yt resolve all_matches", {"url": url, "matches": all_matches}, hyp="H10,H11,H12,H13", loc="youtube_monitor.py:resolve")
-            # #endregion
             for name, pat in _uc_patterns:
                 match = re.search(pat, resp.text)
                 if match:
@@ -113,20 +90,9 @@ def get_channel_videos(channel_id: str) -> List[Dict[str, str]]:
     feed_url = f"https://www.youtube.com/feeds/videos.xml?playlist_id={uulf_playlist}"
     feed = feedparser.parse(feed_url)
 
-    # #region agent log
-    feed_source = "UULF"
-    # #endregion
-
     if not feed.entries:
         feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
         feed = feedparser.parse(feed_url)
-        # #region agent log
-        feed_source = "channel_id_fallback"
-        # #endregion
-
-    # #region agent log
-    _dbg("yt feed_source", {"channel_id": channel_id, "feed_source": feed_source, "playlist_id": uulf_playlist, "entry_count": len(feed.entries)}, hyp="H17", loc="youtube_monitor.py:get_channel_videos")
-    # #endregion
 
     videos: List[Dict[str, str]] = []
     for entry in feed.entries:
@@ -159,10 +125,6 @@ def get_transcript(video_id: str) -> Optional[str]:
 
     Uses a cookies file (data/youtube_cookies.txt) to bypass cloud-IP blocks.
     """
-    # #region agent log
-    _cookies_exists = _COOKIES_PATH.exists()
-    _dbg("yt transcript entry", {"video_id": video_id, "cookies_path": str(_COOKIES_PATH), "cookies_exists": _cookies_exists}, hyp="H18,H22", loc="youtube_monitor.py:get_transcript")
-    # #endregion
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -173,15 +135,8 @@ def get_transcript(video_id: str) -> Optional[str]:
 
         transcript = api.fetch(video_id)
         lines = [snippet.text for snippet in transcript]
-        # #region agent log
-        _dbg("yt transcript OK", {"video_id": video_id, "line_count": len(lines), "sample": lines[:3] if lines else []}, hyp="H18,H22", loc="youtube_monitor.py:get_transcript")
-        # #endregion
-
         return "\n".join(lines)
     except Exception as exc:
-        # #region agent log
-        _dbg("yt transcript FAILED", {"video_id": video_id, "exc_type": type(exc).__name__, "exc_msg": str(exc)[:500], "cookies_used": _cookies_exists}, hyp="H18,H22", loc="youtube_monitor.py:get_transcript")
-        # #endregion
         logger.warning("Transcript unavailable for %s: %s", video_id, exc)
         return None
 
@@ -193,30 +148,17 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
     for channel_input in channels:
         try:
             channel_id = resolve_channel_id(channel_input)
-            # #region agent log
-            _dbg("yt resolve_channel_id", {"channel_input": channel_input, "channel_id": channel_id}, hyp="H6", loc="youtube_monitor.py:check")
-            # #endregion
             if not channel_id:
                 logger.warning("Could not resolve YouTube channel: %s", channel_input)
                 continue
 
             videos = get_channel_videos(channel_id)
-            # #region agent log
-            _seen_count = sum(1 for v in videos if is_post_seen(f"youtube_{v['video_id']}"))
-            _dbg("yt channel videos", {"channel": channel_input, "total_videos": len(videos), "already_seen": _seen_count}, hyp="H6,H7", loc="youtube_monitor.py:check")
-            # #endregion
 
-            # #region agent log
-            kept_videos = []
-            # #endregion
             for video in videos:
                 post_id = f"youtube_{video['video_id']}"
                 if is_post_seen(post_id):
                     continue
 
-                # #region agent log
-                kept_videos.append({"id": video["video_id"], "title": video["title"]})
-                # #endregion
                 new_videos.append(
                     {
                         "id": post_id,
@@ -229,13 +171,7 @@ def check_youtube_for_new_videos(channels: List[str]) -> List[Dict[str, Any]]:
                         "video_id": video["video_id"],
                     }
                 )
-            # #region agent log
-            _dbg("yt result", {"channel": channel_input, "channel_id": channel_id, "kept_count": len(kept_videos), "kept_videos": kept_videos}, hyp="H17", loc="youtube_monitor.py:check")
-            # #endregion
         except Exception as exc:
-            # #region agent log
-            _dbg("yt channel EXCEPTION", {"channel": channel_input, "error": str(exc)}, hyp="H6", loc="youtube_monitor.py:check")
-            # #endregion
             logger.warning("YouTube check failed for %s: %s", channel_input, exc)
 
     return new_videos

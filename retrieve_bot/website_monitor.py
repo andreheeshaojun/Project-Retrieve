@@ -29,18 +29,6 @@ def _load_cookie_jar() -> http.cookiejar.MozillaCookieJar:
             logger.warning("Could not load website cookies: %s", exc)
     return jar
 
-# #region agent log
-import json as _json, time as _time
-from pathlib import Path as _Path
-_DBG_LOG = _Path(__file__).parent.parent / "debug-f972e5.log"
-def _dbg(msg, data=None, hyp="", loc=""):
-    try:
-        with open(_DBG_LOG, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId":"f972e5","timestamp":int(_time.time()*1000),"location":loc,"message":msg,"data":data or {},"hypothesisId":hyp}) + "\n")
-    except Exception:
-        pass
-# #endregion
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -176,22 +164,6 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
             downloaded = resp.text
         else:
             downloaded = trafilatura.fetch_url(article_url)
-        # #region agent log
-        _dbg("website scrape trafilatura", {"url": article_url, "downloaded_len": len(downloaded) if downloaded else 0, "has_login_gate": ("sign in" in (downloaded or "").lower() or "log in" in (downloaded or "").lower()), "has_transcript_link": ("access the full transcript" in (downloaded or "").lower()), "cookies_used": cookies_used, "cookie_count": len(jar)}, hyp="H23,H24,H25,H26,H33", loc="website_monitor.py:scrape")
-        if downloaded:
-            import re as _re
-            from bs4 import BeautifulSoup as _BS
-            _soup = _BS(downloaded, "html.parser")
-            _hidden_divs = _soup.find_all(attrs={"style": _re.compile(r"display\s*:\s*none", _re.I)})
-            _hidden_text_len = sum(len(d.get_text()) for d in _hidden_divs)
-            _transcript_els = _soup.find_all(attrs={"class": _re.compile(r"transcript", _re.I)})
-            _transcript_id_els = _soup.find_all(attrs={"id": _re.compile(r"transcript", _re.I)})
-            _transcript_el_info = [{"tag": e.name, "class": e.get("class"), "text_len": len(e.get_text())} for e in _transcript_els[:5]]
-            _transcript_id_info = [{"tag": e.name, "id": e.get("id"), "text_len": len(e.get_text())} for e in _transcript_id_els[:5]]
-            _all_ps = _soup.find_all("p")
-            _long_ps = [p for p in _all_ps if len(p.get_text(strip=True)) > 100]
-            _dbg("website HTML structure", {"url": article_url, "hidden_div_count": len(_hidden_divs), "hidden_text_len": _hidden_text_len, "transcript_class_els": _transcript_el_info, "transcript_id_els": _transcript_id_info, "total_p_tags": len(_all_ps), "long_p_tags": len(_long_ps), "long_p_sample": [p.get_text()[:100] for p in _long_ps[:3]], "long_p_parents": [{"tag": p.parent.name, "class": p.parent.get("class"), "id": p.parent.get("id")} for p in _long_ps[:3]]}, hyp="H30,H31,H32", loc="website_monitor.py:html_structure")
-        # #endregion
         if downloaded:
             extracted = trafilatura.bare_extraction(
                 downloaded, include_comments=False, include_tables=True
@@ -208,16 +180,10 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
                     result["author"] = getattr(extracted, "author", "") or ""
                     result["date"] = getattr(extracted, "date", "") or ""
                     result["text"] = getattr(extracted, "text", "") or ""
-                # #region agent log
-                _dbg("website scrape extracted", {"url": article_url, "title": result["title"][:80], "text_len": len(result["text"]), "text_preview": result["text"][:300], "text_tail": result["text"][-200:] if len(result["text"]) > 200 else "", "api_type": "dict" if _get else "Document"}, hyp="H23,H26", loc="website_monitor.py:scrape")
-                # #endregion
 
         if result["text"]:
             return result
     except Exception as exc:
-        # #region agent log
-        _dbg("website scrape trafilatura FAILED", {"url": article_url, "exc_type": type(exc).__name__, "exc_msg": str(exc)[:300]}, hyp="H23", loc="website_monitor.py:scrape")
-        # #endregion
         logger.warning("trafilatura failed for %s: %s", article_url, exc)
 
     try:
