@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -309,8 +309,27 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
 
     config.update_last_check()
 
+    # FIX-2: 3-strike discard rule — remove items shown 3 times without selection
+    filtered_items: List[dict] = []
+    for item in all_items:
+        count = config.get_strike_count(item["id"])
+        if count >= 3:
+            config.discard_item(item["id"], item["title"])
+            continue
+        filtered_items.append(item)
+
+    # FIX-3: Strict top-15 cap — never backfill older content
+    filtered_items = filtered_items[:15]
+
+    # FIX-2: Increment strike counter for every item we are about to show
+    for item in filtered_items:
+        config.increment_strike(item["id"], item["title"])
+
+    all_items = filtered_items
+
     if not all_items:
-        await context.bot.send_message(chat_id, "No new content found.")
+        # FIX-3: Explicit "nothing today" message instead of silence
+        await context.bot.send_message(chat_id, "No new content to show today.")
         return
 
     # Store pending items
@@ -531,6 +550,8 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             local_path.unlink(missing_ok=True)
             config.mark_post_seen(item["id"])
+            # FIX-2: Clear strike record for saved items
+            config.clear_strike(item["id"])
             saved += 1
 
         except Exception as exc:
@@ -552,11 +573,21 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # ====================================================================
-# Scheduled 24-hour check (called by JobQueue)
+# FIX-1: Scheduled daily check at a fixed wall-clock time (JobQueue)
 # ====================================================================
 
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Running scheduled 24-hour content check...")
+    now = datetime.now(timezone.utc)
+    hour, minute = config.get_daily_check_time()
+    next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if next_run <= now:
+        next_run += timedelta(days=1)
+    # FIX-1: Log each cycle with precise timestamps for auditing
+    logger.info(
+        "[CHECK CYCLE] Started at %s, next scheduled at %s",
+        now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        next_run.strftime("%Y-%m-%d %H:%M:%S UTC"),
+    )
     await _run_content_check(context)
 
 
@@ -594,13 +625,14 @@ def create_application() -> Application:
         CallbackQueryHandler(handle_confirm_save, pattern="^confirm_save$")
     )
 
-    # 24-hour recurring check (first run 60 s after startup)
+    # FIX-1: Daily check at a fixed UTC time instead of relative-to-startup.
+    # Eliminates irregular timing caused by bot restarts stacking jobs.
     job_queue = app.job_queue
     if job_queue:
-        job_queue.run_repeating(
+        hour, minute = config.get_daily_check_time()
+        job_queue.run_daily(
             scheduled_check,
-            interval=86400,
-            first=1800,
+            time=dt_time(hour=hour, minute=minute, tzinfo=timezone.utc),
         )
 
     return app

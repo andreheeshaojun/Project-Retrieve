@@ -1,9 +1,12 @@
 """Persistent configuration and state management for tracked sources."""
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -17,6 +20,12 @@ DEFAULT_CONFIG = {
     "seen_posts": {},
     "pending_items": [],
     "telegram_chat_id": None,
+    # FIX-1: Hour/minute (UTC) for the daily scheduled check
+    "daily_check_hour": 9,
+    "daily_check_minute": 0,
+    # FIX-2: Strike counts for the 3-strike discard rule.
+    # {post_id: {"count": N, "title": "..."}}
+    "strike_counts": {},
 }
 
 
@@ -125,4 +134,51 @@ def get_pending_items() -> list:
 def clear_pending_items():
     config = load_config()
     config["pending_items"] = []
+    save_config(config)
+
+
+# --------------- FIX-1: daily check schedule ---------------
+
+def get_daily_check_time() -> tuple[int, int]:
+    """Return (hour, minute) in UTC for the daily scheduled check."""
+    cfg = load_config()
+    return cfg.get("daily_check_hour", 9), cfg.get("daily_check_minute", 0)
+
+
+# --------------- FIX-2: 3-strike discard tracking ---------------
+
+def get_strike_count(post_id: str) -> int:
+    """Return how many cycles this item has been shown without selection."""
+    counts = load_config().get("strike_counts", {})
+    entry = counts.get(post_id)
+    return entry["count"] if isinstance(entry, dict) else 0
+
+
+def increment_strike(post_id: str, title: str) -> int:
+    """Increment the strike counter; returns the new count."""
+    config = load_config()
+    strikes = config.setdefault("strike_counts", {})
+    entry = strikes.get(post_id)
+    if isinstance(entry, dict):
+        entry["count"] += 1
+    else:
+        entry = {"count": 1, "title": title}
+    strikes[post_id] = entry
+    save_config(config)
+    return entry["count"]
+
+
+def clear_strike(post_id: str):
+    """Remove an item's strike record (e.g. after user saves it)."""
+    config = load_config()
+    config.get("strike_counts", {}).pop(post_id, None)
+    save_config(config)
+
+
+def discard_item(post_id: str, title: str):
+    """Permanently discard an item: mark seen and remove strike record."""
+    logger.info('[DISCARDED] "%s" - shown 3 times without selection', title)
+    mark_post_seen(post_id)
+    config = load_config()
+    config.get("strike_counts", {}).pop(post_id, None)
     save_config(config)
