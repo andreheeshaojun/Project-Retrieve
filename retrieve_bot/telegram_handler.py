@@ -318,18 +318,31 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             continue
         filtered_items.append(item)
 
-    # FIX-3: Round-robin interleave across sources so the top-15 cap is fair.
-    # Without this, the first source checked would monopolize all 15 slots.
+    # FIX-3: Two-level round-robin — first across platforms (substack,
+    # youtube, website) then across individual sources within each platform.
+    # This prevents a platform with many sources from monopolizing the cap.
     from collections import defaultdict
-    _src_buckets: dict[str, List[dict]] = defaultdict(list)
+    _plat_src: dict[str, dict[str, List[dict]]] = defaultdict(lambda: defaultdict(list))
     for item in filtered_items:
-        _src_buckets[f"{item['platform']}_{item['source']}"].append(item)
+        _plat_src[item["platform"]][item["source"]].append(item)
+
+    _plat_interleaved: dict[str, List[dict]] = {}
+    for platform, src_map in _plat_src.items():
+        flat: List[dict] = []
+        _depth = max((len(v) for v in src_map.values()), default=0)
+        for d in range(_depth):
+            for src in src_map:
+                if d < len(src_map[src]):
+                    flat.append(src_map[src][d])
+        _plat_interleaved[platform] = flat
+
     interleaved: List[dict] = []
-    _max_depth = max((len(v) for v in _src_buckets.values()), default=0)
-    for depth in range(_max_depth):
-        for src_key in _src_buckets:
-            if depth < len(_src_buckets[src_key]):
-                interleaved.append(_src_buckets[src_key][depth])
+    _platforms = list(_plat_interleaved.keys())
+    _max_len = max((len(v) for v in _plat_interleaved.values()), default=0)
+    for i in range(_max_len):
+        for p in _platforms:
+            if i < len(_plat_interleaved[p]):
+                interleaved.append(_plat_interleaved[p][i])
     filtered_items = interleaved[:15]
 
     # FIX-2: Increment strike counter for every item we are about to show
