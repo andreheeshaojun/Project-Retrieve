@@ -49,13 +49,13 @@ def resolve_channel_id(channel_input: str) -> Optional[str]:
     ]
 
     _uc_patterns = [
-        r'"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"',
-        r'"browseId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"',
-        r'"externalId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"',
-        r'"externalChannelId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"',
-        r'<meta\s+itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"',
-        r'<link\s+rel="canonical"\s+href="https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"',
-        r'/channel/(UC[a-zA-Z0-9_-]{22})',
+        ("rss", r'<link[^>]+type="application/rss\+xml"[^>]+href="[^"]*channel_id=(UC[a-zA-Z0-9_-]{22})'),
+        ("externalId", r'"externalId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"'),
+        ("meta_itemprop", r'<meta\s+itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"'),
+        ("canonical", r'<link\s+rel="canonical"\s+href="https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"'),
+        ("channelId", r'"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"'),
+        ("browseId", r'"browseId"\s*:\s*"(UC[a-zA-Z0-9_-]{22})"'),
+        ("channel_url", r'/channel/(UC[a-zA-Z0-9_-]{22})'),
     ]
 
     for url in url_patterns:
@@ -66,19 +66,21 @@ def resolve_channel_id(channel_input: str) -> Optional[str]:
             )
             if resp.status_code != 200:
                 # #region agent log
-                _dbg("yt resolve attempt", {"url": url, "status": resp.status_code, "resp_len": len(resp.text)}, hyp="H6", loc="youtube_monitor.py:resolve")
+                _dbg("yt resolve attempt", {"url": url, "status": resp.status_code, "resp_len": len(resp.text)}, hyp="H10", loc="youtube_monitor.py:resolve")
                 # #endregion
                 continue
-            for pat in _uc_patterns:
+            # #region agent log
+            all_matches = {}
+            for name, pat in _uc_patterns:
+                m = re.search(pat, resp.text)
+                if m:
+                    all_matches[name] = m.group(1)
+            _dbg("yt resolve all_matches", {"url": url, "matches": all_matches}, hyp="H10,H11,H12,H13", loc="youtube_monitor.py:resolve")
+            # #endregion
+            for name, pat in _uc_patterns:
                 match = re.search(pat, resp.text)
                 if match:
-                    # #region agent log
-                    _dbg("yt resolve attempt", {"url": url, "status": 200, "resp_len": len(resp.text), "matched_pattern": pat, "channel_id": match.group(1)}, hyp="H6", loc="youtube_monitor.py:resolve")
-                    # #endregion
                     return match.group(1)
-            # #region agent log
-            _dbg("yt resolve attempt", {"url": url, "status": 200, "resp_len": len(resp.text), "matched_pattern": None, "has_UC": "UC" in resp.text}, hyp="H6", loc="youtube_monitor.py:resolve")
-            # #endregion
         except Exception:
             continue
 
