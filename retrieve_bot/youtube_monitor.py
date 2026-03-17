@@ -2,6 +2,7 @@
 
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import feedparser
@@ -150,36 +151,36 @@ def get_channel_videos(channel_id: str) -> List[Dict[str, str]]:
     return videos
 
 
+_COOKIES_PATH = Path(__file__).parent.parent / "data" / "youtube_cookies.txt"
+
+
 def get_transcript(video_id: str) -> Optional[str]:
-    """Retrieve the transcript for a YouTube video (handles API v0.x and v1.x)."""
+    """Retrieve the transcript for a YouTube video.
+
+    Uses a cookies file (data/youtube_cookies.txt) to bypass cloud-IP blocks.
+    """
     # #region agent log
-    _dbg("yt transcript entry", {"video_id": video_id, "vid_len": len(video_id) if video_id else 0}, hyp="H18,H19,H20", loc="youtube_monitor.py:get_transcript")
+    _cookies_exists = _COOKIES_PATH.exists()
+    _dbg("yt transcript entry", {"video_id": video_id, "cookies_path": str(_COOKIES_PATH), "cookies_exists": _cookies_exists}, hyp="H18,H22", loc="youtube_monitor.py:get_transcript")
     # #endregion
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        # #region agent log
-        import youtube_transcript_api as _yta_mod
-        _dbg("yt transcript lib", {"version": getattr(_yta_mod, "__version__", "unknown"), "api_attrs": [a for a in dir(YouTubeTranscriptApi) if not a.startswith("_")]}, hyp="H19,H21", loc="youtube_monitor.py:get_transcript")
-        # #endregion
 
-        try:
+        if _COOKIES_PATH.exists():
+            api = YouTubeTranscriptApi(cookies=str(_COOKIES_PATH))
+        else:
             api = YouTubeTranscriptApi()
-            transcript = api.fetch(video_id)
-            lines = [snippet.text for snippet in transcript]
-            # #region agent log
-            _dbg("yt transcript v1 OK", {"video_id": video_id, "line_count": len(lines), "sample": lines[:3] if lines else []}, hyp="H18,H19", loc="youtube_monitor.py:get_transcript")
-            # #endregion
-        except (TypeError, AttributeError) as inner_exc:
-            # #region agent log
-            _dbg("yt transcript v1 fallback", {"video_id": video_id, "inner_exc_type": type(inner_exc).__name__, "inner_exc": str(inner_exc)[:200]}, hyp="H19", loc="youtube_monitor.py:get_transcript")
-            # #endregion
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
-            lines = [entry["text"] for entry in transcript]
+
+        transcript = api.fetch(video_id)
+        lines = [snippet.text for snippet in transcript]
+        # #region agent log
+        _dbg("yt transcript OK", {"video_id": video_id, "line_count": len(lines), "sample": lines[:3] if lines else []}, hyp="H18,H22", loc="youtube_monitor.py:get_transcript")
+        # #endregion
 
         return "\n".join(lines)
     except Exception as exc:
         # #region agent log
-        _dbg("yt transcript FAILED", {"video_id": video_id, "exc_type": type(exc).__name__, "exc_msg": str(exc)[:500]}, hyp="H18,H19,H20,H21", loc="youtube_monitor.py:get_transcript")
+        _dbg("yt transcript FAILED", {"video_id": video_id, "exc_type": type(exc).__name__, "exc_msg": str(exc)[:500], "cookies_used": _cookies_exists}, hyp="H18,H22", loc="youtube_monitor.py:get_transcript")
         # #endregion
         logger.warning("Transcript unavailable for %s: %s", video_id, exc)
         return None

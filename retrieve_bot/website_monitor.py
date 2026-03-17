@@ -14,6 +14,18 @@ from retrieve_bot.config import is_post_seen, mark_post_seen
 
 logger = logging.getLogger(__name__)
 
+# #region agent log
+import json as _json, time as _time
+from pathlib import Path as _Path
+_DBG_LOG = _Path(__file__).parent.parent / "debug-f972e5.log"
+def _dbg(msg, data=None, hyp="", loc=""):
+    try:
+        with open(_DBG_LOG, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId":"f972e5","timestamp":int(_time.time()*1000),"location":loc,"message":msg,"data":data or {},"hypothesisId":hyp}) + "\n")
+    except Exception:
+        pass
+# #endregion
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -142,6 +154,9 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
         import trafilatura
 
         downloaded = trafilatura.fetch_url(article_url)
+        # #region agent log
+        _dbg("website scrape trafilatura", {"url": article_url, "downloaded_len": len(downloaded) if downloaded else 0, "has_login_gate": ("sign in" in (downloaded or "").lower() or "log in" in (downloaded or "").lower()), "has_transcript_link": ("access the full transcript" in (downloaded or "").lower())}, hyp="H23,H24,H25,H26", loc="website_monitor.py:scrape")
+        # #endregion
         if downloaded:
             extracted = trafilatura.bare_extraction(
                 downloaded, include_comments=False, include_tables=True
@@ -151,10 +166,16 @@ def scrape_article_content(article_url: str) -> Dict[str, str]:
                 result["author"] = extracted.get("author") or ""
                 result["date"] = extracted.get("date") or ""
                 result["text"] = extracted.get("text") or ""
+                # #region agent log
+                _dbg("website scrape extracted", {"url": article_url, "title": result["title"][:80], "text_len": len(result["text"]), "text_preview": result["text"][:300], "text_tail": result["text"][-200:] if len(result["text"]) > 200 else ""}, hyp="H23,H26", loc="website_monitor.py:scrape")
+                # #endregion
 
         if result["text"]:
             return result
     except Exception as exc:
+        # #region agent log
+        _dbg("website scrape trafilatura FAILED", {"url": article_url, "exc_type": type(exc).__name__, "exc_msg": str(exc)[:300]}, hyp="H23", loc="website_monitor.py:scrape")
+        # #endregion
         logger.warning("trafilatura failed for %s: %s", article_url, exc)
 
     try:
