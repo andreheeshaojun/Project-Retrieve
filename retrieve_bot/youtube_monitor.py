@@ -1,12 +1,16 @@
 """Monitor tracked YouTube channels for new videos and retrieve transcripts."""
 
+import json
 import logging
 import re
+from html import unescape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from xml.etree import ElementTree
 
 import feedparser
 import requests
+from bs4 import BeautifulSoup
 
 from retrieve_bot.config import is_post_seen
 
@@ -120,11 +124,39 @@ def get_channel_videos(channel_id: str) -> List[Dict[str, str]]:
 _COOKIES_PATH = Path(__file__).parent.parent / "data" / "youtube_cookies.txt"
 
 
-def get_transcript(video_id: str) -> Optional[str]:
-    """Retrieve the transcript for a YouTube video.
+# ---- transcript fallback chain ----
 
-    Uses a cookies file (data/youtube_cookies.txt) to bypass cloud-IP blocks.
+
+def get_transcript(video_id: str) -> Optional[str]:
+    """Retrieve transcript via a three-level fallback chain.
+
+    1. youtube_transcript_api + cookies
+    2. Direct YouTube page scraping (extract captionTracks → fetch XML)
+    3. youtubetotranscript.com (best-effort HTTP scrape)
+
+    Returns the transcript as plain text, or None if all methods fail.
     """
+    text = _transcript_via_api(video_id)
+    if text:
+        logger.info("[YOUTUBE] Transcript OK via API for %s (%d chars)", video_id, len(text))
+        return text
+
+    text = _transcript_via_page_scrape(video_id)
+    if text:
+        logger.info("[YOUTUBE] Transcript OK via page scrape for %s (%d chars)", video_id, len(text))
+        return text
+
+    text = _transcript_via_web_fallback(video_id)
+    if text:
+        logger.info("[YOUTUBE] Transcript OK via web fallback for %s (%d chars)", video_id, len(text))
+        return text
+
+    logger.warning("[YOUTUBE] No transcript available for %s", video_id)
+    return None
+
+
+def _transcript_via_api(video_id: str) -> Optional[str]:
+    """Method 1: youtube_transcript_api with optional cookie authentication."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -135,9 +167,115 @@ def get_transcript(video_id: str) -> Optional[str]:
 
         transcript = api.fetch(video_id)
         lines = [snippet.text for snippet in transcript]
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        return text if text.strip() else None
     except Exception as exc:
-        logger.warning("Transcript unavailable for %s: %s", video_id, exc)
+        logger.info("[YOUTUBE] API method failed for %s: %s", video_id, exc)
+        return None
+
+
+def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
+    """Method 2: fetch YouTube video page, extract caption track URL, fetch XML."""
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        resp = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=20)
+        if resp.status_code != 200:
+            logger.info("[YOUTUBE] Page scrape: HTTP %d for %s", resp.status_code, video_id)
+            return None
+
+        match = re.search(r'ytInitialPlayerResponse\s*=\s*', resp.text)
+        if not match:
+            logger.info("[YOUTUBE] Page scrape: no ytInitialPlayerResponse for %s", video_id)
+            return None
+
+        decoder = json.JSONDecoder()
+        player_resp, _ = decoder.raw_decode(resp.text, match.end())
+
+        tracks = (
+            player_resp
+            .get("captions", {})
+            .get("playerCaptionsTracklistRenderer", {})
+            .get("captionTracks", [])
+        )
+        if not tracks:
+            logger.info("[YOUTUBE] Page scrape: no captionTracks for %s", video_id)
+            return None
+
+        track = next(
+            (t for t in tracks if t.get("languageCode", "").startswith("en")),
+            tracks[0],
+        )
+        base_url = track.get("baseUrl", "")
+        if not base_url:
+            return None
+
+        cap_resp = requests.get(base_url, headers=HEADERS, timeout=15)
+        if cap_resp.status_code != 200:
+            return None
+
+        root = ElementTree.fromstring(cap_resp.text)
+        lines = [unescape(elem.text) for elem in root.iter("text") if elem.text]
+        return "\n".join(lines) if lines else None
+    except Exception as exc:
+        logger.info("[YOUTUBE] Page scrape failed for %s: %s", video_id, exc)
+        return None
+
+
+def _transcript_via_web_fallback(video_id: str) -> Optional[str]:
+    """Method 3: best-effort scrape of youtubetotranscript.com.
+
+    The site is primarily JS-rendered, so this only works if the server
+    includes transcript data in the initial HTML (e.g. via SSR/Next.js
+    __NEXT_DATA__).  Fails gracefully if the content is client-rendered.
+
+    Constraints: no documented rate limits for the public site, but heavy
+    automated use may be blocked. This is a last-resort fallback.
+    """
+    try:
+        url = f"https://youtubetotranscript.com/transcript?v={video_id}&current_language_code=en"
+        resp = requests.get(
+            url,
+            headers={**HEADERS, "Accept": "text/html"},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            logger.info("[YOUTUBE] Web fallback: HTTP %d for %s", resp.status_code, video_id)
+            return None
+
+        # Try __NEXT_DATA__ JSON blob (Next.js SSR)
+        nd_match = re.search(
+            r'<script\s+id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+            resp.text, re.DOTALL,
+        )
+        if nd_match:
+            nd = json.loads(nd_match.group(1))
+            props = nd.get("props", {}).get("pageProps", {})
+            segments = props.get("transcript") or props.get("segments") or []
+            if isinstance(segments, list) and segments:
+                lines = [
+                    seg.get("text", "") if isinstance(seg, dict) else str(seg)
+                    for seg in segments
+                ]
+                text = "\n".join(l for l in lines if l.strip())
+                if text:
+                    return text
+            body_text = props.get("body") or props.get("text") or ""
+            if len(body_text) > 100:
+                return body_text
+
+        # Fallback: try parsing visible HTML for transcript content
+        soup = BeautifulSoup(resp.text, "lxml")
+        for sel in ("#demo", ".transcript", "[data-transcript]"):
+            el = soup.select_one(sel)
+            if el:
+                text = el.get_text(separator="\n", strip=True)
+                if len(text) > 100:
+                    return text
+
+        logger.info("[YOUTUBE] Web fallback: no transcript in HTML for %s", video_id)
+        return None
+    except Exception as exc:
+        logger.info("[YOUTUBE] Web fallback failed for %s: %s", video_id, exc)
         return None
 
 
