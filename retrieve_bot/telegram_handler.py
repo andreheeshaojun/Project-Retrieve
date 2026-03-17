@@ -208,6 +208,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_str = last.strftime("%Y-%m-%d %H:%M UTC") if last else "Never"
     n_pending = len(pending_items)
 
+    plat_breakdown = {}
+    for item in pending_items.values():
+        p = item.get("platform", "unknown")
+        plat_breakdown[p] = plat_breakdown.get(p, 0) + 1
+    breakdown_str = ", ".join(f"{k}: {v}" for k, v in sorted(plat_breakdown.items()))
+
     await update.message.reply_text(
         f"Retrieve Bot Status\n"
         f"-------------------\n"
@@ -217,6 +223,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Spotify sources:  {n_sp}\n"
         f"Last check:       {last_str}\n"
         f"Pending items:    {n_pending}\n"
+        f"  Breakdown:      {breakdown_str or 'none'}\n"
         f"OneDrive:         {od_status}"
     )
 
@@ -309,6 +316,14 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
 
     config.update_last_check()
 
+    # Log raw counts from each monitor
+    from collections import Counter
+    _raw_counts = Counter(item["platform"] for item in all_items)
+    logger.info(
+        "[CHECK] Raw items collected: %s (total %d)",
+        dict(_raw_counts), len(all_items),
+    )
+
     # FIX-2: 3-strike discard rule — remove items shown 3 times without selection
     filtered_items: List[dict] = []
     for item in all_items:
@@ -344,6 +359,12 @@ async def _run_content_check(context: ContextTypes.DEFAULT_TYPE):
             if i < len(_plat_interleaved[p]):
                 interleaved.append(_plat_interleaved[p][i])
     filtered_items = interleaved[:15]
+
+    _final_counts = Counter(item["platform"] for item in filtered_items)
+    logger.info(
+        "[CHECK] After round-robin cap: %s (total %d) | platforms: %s",
+        dict(_final_counts), len(filtered_items), _platforms,
+    )
 
     # FIX-2: Increment strike counter for every item we are about to show
     for item in filtered_items:

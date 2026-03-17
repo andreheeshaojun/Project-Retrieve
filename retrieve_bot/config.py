@@ -43,6 +43,10 @@ def load_config() -> dict:
                 config[key] = (
                     type(default)() if isinstance(default, (list, dict)) else default
                 )
+        if not isinstance(config.get("seen_posts"), dict):
+            config["seen_posts"] = {}
+        if not isinstance(config.get("strike_counts"), dict):
+            config["strike_counts"] = {}
         return config
     save_config(DEFAULT_CONFIG.copy())
     return DEFAULT_CONFIG.copy()
