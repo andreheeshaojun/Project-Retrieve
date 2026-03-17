@@ -1,17 +1,13 @@
 """Monitor tracked YouTube channels for new videos and retrieve transcripts."""
 
-import http.cookiejar
-import json
 import logging
+import os
 import re
-from html import unescape
-from pathlib import Path
+import time
 from typing import Any, Dict, List, Optional
-from xml.etree import ElementTree
 
 import feedparser
 import requests
-from bs4 import BeautifulSoup
 
 from retrieve_bot.config import is_post_seen
 
@@ -26,6 +22,9 @@ HEADERS = {
 }
 
 COOKIES = {"CONSENT": "PENDING+987", "SOCS": "CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg"}
+
+_TRANSCRIPT_API_URL = "https://transcriptapi.com/api/v2/youtube/transcript"
+_last_transcript_call: float = 0.0
 
 
 def _is_short(video_id: str) -> bool:
@@ -122,278 +121,71 @@ def get_channel_videos(channel_id: str) -> List[Dict[str, str]]:
     return videos
 
 
-_COOKIES_PATH = Path(__file__).parent.parent / "data" / "youtube_cookies.txt"
-
-
-def _load_youtube_cookies() -> http.cookiejar.MozillaCookieJar:
-    """Load YouTube cookies from data/youtube_cookies.txt (Netscape format)."""
-    jar = http.cookiejar.MozillaCookieJar()
-    if _COOKIES_PATH.exists():
-        try:
-            jar.load(str(_COOKIES_PATH), ignore_discard=True, ignore_expires=True)
-        except Exception as exc:
-            logger.warning("[YOUTUBE] Could not load cookies: %s", exc)
-    return jar
-
-
-def _make_authenticated_session() -> requests.Session:
-    """Create a requests.Session pre-loaded with YouTube cookies and headers."""
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    session.cookies.update(COOKIES)
-    jar = _load_youtube_cookies()
-    if len(jar) > 0:
-        for cookie in jar:
-            session.cookies.set_cookie(cookie)
-        logger.info("[YOUTUBE] Loaded %d cookies from file", len(jar))
-    return session
-
-
-# ---- transcript fallback chain ----
+# ---- transcript via TranscriptAPI.com ----
 
 
 def get_transcript(video_id: str) -> Optional[str]:
-    """Retrieve transcript via a three-level fallback chain.
+    """Fetch transcript from TranscriptAPI.com.
 
-    1. youtube_transcript_api + cookies
-    2. Direct YouTube page scraping (extract captionTracks → fetch XML)
-    3. youtubetotranscript.com (best-effort HTTP scrape)
-
-    Returns the transcript as plain text, or None if all methods fail.
+    Returns the transcript as plain text, or None on failure.
+    Enforces a 3-second minimum gap between consecutive API calls.
     """
-    text = _transcript_via_api(video_id)
-    if text:
-        logger.info("[YOUTUBE] Transcript OK via API for %s (%d chars)", video_id, len(text))
-        return text
+    global _last_transcript_call
 
-    text = _transcript_via_page_scrape(video_id)
-    if text:
-        logger.info("[YOUTUBE] Transcript OK via page scrape for %s (%d chars)", video_id, len(text))
-        return text
-
-    text = _transcript_via_web_fallback(video_id)
-    if text:
-        logger.info("[YOUTUBE] Transcript OK via web fallback for %s (%d chars)", video_id, len(text))
-        return text
-
-    logger.warning("[YOUTUBE] No transcript available for %s", video_id)
-    return None
-
-
-def _transcript_via_api(video_id: str) -> Optional[str]:
-    """Method 1: youtube_transcript_api with a pre-authenticated requests.Session.
-
-    v1.x disabled built-in cookie loading, but accepts an http_client (Session)
-    with cookies already attached — this bypasses the disabled feature.
-    """
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-
-        session = _make_authenticated_session()
-        api = YouTubeTranscriptApi(http_client=session)
-        transcript = api.fetch(video_id)
-        lines = [snippet.text for snippet in transcript]
-        text = "\n".join(lines)
-        return text if text.strip() else None
-    except Exception as exc:
-        logger.info("[YOUTUBE] API method failed for %s: %s", video_id, exc)
+    api_key = os.getenv("TRANSCRIPT_API_KEY", "")
+    if not api_key:
+        logger.warning("[YOUTUBE] TRANSCRIPT_API_KEY not set in environment")
         return None
 
+    elapsed = time.time() - _last_transcript_call
+    if elapsed < 3.0:
+        time.sleep(3.0 - elapsed)
 
-def _transcript_via_page_scrape(video_id: str) -> Optional[str]:
-    """Method 2: fetch YouTube video page with cookies, extract caption track URL, fetch XML."""
     try:
-        session = _make_authenticated_session()
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        resp = session.get(url, timeout=20)
+        resp = requests.get(
+            _TRANSCRIPT_API_URL,
+            params={"video_url": video_id, "format": "json"},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
+        )
+        _last_transcript_call = time.time()
+
         if resp.status_code != 200:
-            logger.info("[YOUTUBE] Page scrape: HTTP %d for %s", resp.status_code, video_id)
-            return None
-
-        html = resp.text
-
-        # Strategy A: parse ytInitialPlayerResponse JSON blob
-        base_url = _extract_caption_url_from_player_response(html, video_id)
-
-        # Strategy B: regex for captionTracks directly in raw HTML
-        if not base_url:
-            base_url = _extract_caption_url_from_raw_html(html, video_id)
-
-        if not base_url:
-            has_player = "ytInitialPlayerResponse" in html
-            has_consent = "consent.youtube.com" in html
-            logger.info(
-                "[YOUTUBE] Page scrape: no caption URL for %s "
-                "(has_player=%s, consent_page=%s, page_len=%d)",
-                video_id, has_player, has_consent, len(html),
+            logger.warning(
+                "[YOUTUBE] TranscriptAPI failed for %s: HTTP %d — %s",
+                video_id, resp.status_code, resp.text[:200],
             )
             return None
 
-        logger.info("[YOUTUBE] Page scrape: got caption URL for %s", video_id)
+        data = resp.json()
 
-        # Try json3 format first (more reliable than XML from cloud IPs)
-        json3_url = re.sub(r'&fmt=\w+', '', base_url) + "&fmt=json3"
-        text = _fetch_captions_json3(session, json3_url, video_id)
-        if text:
-            return text
+        segments = data.get("transcript") or data.get("segments") or []
+        if isinstance(segments, list) and segments:
+            lines = [
+                seg.get("text", "") if isinstance(seg, dict) else str(seg)
+                for seg in segments
+            ]
+            text = "\n".join(ln for ln in lines if ln.strip())
+            if text:
+                logger.info(
+                    "[TRANSCRIPT] %s - fetched via TranscriptAPI.com (%d chars)",
+                    video_id, len(text),
+                )
+                return text
 
-        # Fall back to default XML/srv3 format
-        text = _fetch_captions_xml(session, base_url, video_id)
-        if text:
-            return text
+        if isinstance(data, dict) and data.get("text"):
+            logger.info(
+                "[TRANSCRIPT] %s - fetched via TranscriptAPI.com (%d chars)",
+                video_id, len(data["text"]),
+            )
+            return data["text"]
 
+        logger.warning("[YOUTUBE] TranscriptAPI returned empty transcript for %s", video_id)
         return None
+
     except Exception as exc:
-        logger.info("[YOUTUBE] Page scrape failed for %s: %s", video_id, exc)
-        return None
-
-
-def _fetch_captions_json3(session: requests.Session, url: str, video_id: str) -> Optional[str]:
-    """Fetch captions in json3 format and extract text."""
-    try:
-        resp = session.get(url, timeout=15)
-        if resp.status_code != 200:
-            logger.info("[YOUTUBE] json3 caption HTTP %d for %s", resp.status_code, video_id)
-            return None
-        if not resp.text.strip():
-            logger.info("[YOUTUBE] json3 caption empty response for %s", video_id)
-            return None
-        data = json.loads(resp.text)
-        lines: List[str] = []
-        for event in data.get("events", []):
-            for seg in event.get("segs", []):
-                text = seg.get("utf8", "").strip()
-                if text and text != "\n":
-                    lines.append(text)
-        return "\n".join(lines) if lines else None
-    except Exception as exc:
-        logger.info("[YOUTUBE] json3 parse failed for %s: %s", video_id, exc)
-        return None
-
-
-def _fetch_captions_xml(session: requests.Session, url: str, video_id: str) -> Optional[str]:
-    """Fetch captions in default XML/srv3 format and extract text."""
-    try:
-        resp = session.get(url, timeout=15)
-        if resp.status_code != 200:
-            logger.info("[YOUTUBE] XML caption HTTP %d for %s", resp.status_code, video_id)
-            return None
-        body = resp.text.strip()
-        if not body:
-            logger.info("[YOUTUBE] XML caption empty response for %s", video_id)
-            return None
-        root = ElementTree.fromstring(body)
-        lines = [unescape(elem.text) for elem in root.iter("text") if elem.text]
-        return "\n".join(lines) if lines else None
-    except Exception as exc:
-        logger.info("[YOUTUBE] XML parse failed for %s: %s (first 100 chars: %s)",
-                     video_id, exc, resp.text[:100] if 'resp' in dir() else 'N/A')
-        return None
-
-
-def _extract_caption_url_from_player_response(html: str, video_id: str) -> Optional[str]:
-    """Parse ytInitialPlayerResponse JSON to find an English caption track URL."""
-    match = re.search(r'ytInitialPlayerResponse\s*=\s*', html)
-    if not match:
-        return None
-    try:
-        decoder = json.JSONDecoder()
-        player_resp, _ = decoder.raw_decode(html, match.end())
-    except (json.JSONDecodeError, ValueError):
-        return None
-
-    tracks = (
-        player_resp
-        .get("captions", {})
-        .get("playerCaptionsTracklistRenderer", {})
-        .get("captionTracks", [])
-    )
-    if not tracks:
-        status = player_resp.get("playabilityStatus", {}).get("status", "?")
-        logger.info("[YOUTUBE] Page scrape: playerResponse has no captions (status=%s) for %s", status, video_id)
-        return None
-
-    track = next(
-        (t for t in tracks if t.get("languageCode", "").startswith("en")),
-        tracks[0],
-    )
-    return track.get("baseUrl")
-
-
-def _extract_caption_url_from_raw_html(html: str, video_id: str) -> Optional[str]:
-    """Regex fallback: find a timedtext baseUrl directly in the page HTML."""
-    match = re.search(
-        r'"baseUrl"\s*:\s*"(https://www\.youtube\.com/api/timedtext[^"]+)"',
-        html,
-    )
-    if not match:
-        return None
-    raw_url = match.group(1).replace("\\u0026", "&")
-    if "lang=en" in raw_url or "lang=a.en" in raw_url:
-        return raw_url
-    # Accept any language if English not found
-    return raw_url
-
-
-def _transcript_via_web_fallback(video_id: str) -> Optional[str]:
-    """Method 3: best-effort scrape of youtubetotranscript.com.
-
-    The site is primarily JS-rendered, so this only works if the server
-    includes transcript data in the initial HTML (e.g. via SSR/Next.js
-    __NEXT_DATA__).  Fails gracefully if the content is client-rendered.
-
-    Constraints: no documented rate limits for the public site, but heavy
-    automated use may be blocked. This is a last-resort fallback.
-    """
-    _BROWSER_HEADERS = {
-        "User-Agent": HEADERS["User-Agent"],
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://youtubetotranscript.com/",
-        "Connection": "keep-alive",
-    }
-    try:
-        url = f"https://youtubetotranscript.com/transcript?v={video_id}&current_language_code=en"
-        resp = requests.get(url, headers=_BROWSER_HEADERS, timeout=20)
-        if resp.status_code != 200:
-            logger.info("[YOUTUBE] Web fallback: HTTP %d for %s", resp.status_code, video_id)
-            return None
-
-        # Try __NEXT_DATA__ JSON blob (Next.js SSR)
-        nd_match = re.search(
-            r'<script\s+id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-            resp.text, re.DOTALL,
-        )
-        if nd_match:
-            nd = json.loads(nd_match.group(1))
-            props = nd.get("props", {}).get("pageProps", {})
-            segments = props.get("transcript") or props.get("segments") or []
-            if isinstance(segments, list) and segments:
-                lines = [
-                    seg.get("text", "") if isinstance(seg, dict) else str(seg)
-                    for seg in segments
-                ]
-                text = "\n".join(ln for ln in lines if ln.strip())
-                if text:
-                    return text
-            body_text = props.get("body") or props.get("text") or ""
-            if len(body_text) > 100:
-                return body_text
-
-        # Fallback: try parsing visible HTML for transcript content
-        soup = BeautifulSoup(resp.text, "lxml")
-        for sel in ("#demo", ".transcript", "[data-transcript]"):
-            el = soup.select_one(sel)
-            if el:
-                text = el.get_text(separator="\n", strip=True)
-                if len(text) > 100:
-                    return text
-
-        logger.info("[YOUTUBE] Web fallback: no transcript in HTML for %s", video_id)
-        return None
-    except Exception as exc:
-        logger.info("[YOUTUBE] Web fallback failed for %s: %s", video_id, exc)
+        _last_transcript_call = time.time()
+        logger.warning("[YOUTUBE] TranscriptAPI failed for %s: %s", video_id, exc)
         return None
 
 
