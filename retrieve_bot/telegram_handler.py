@@ -495,9 +495,6 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
         for iid in selected_items
         if iid in pending_items
     ]
-    # #region agent log
-    import json as _djson, time as _dtime; _dlp = Path(__file__).parent.parent / "debug-f972e5.log"; open(_dlp,"a").write(_djson.dumps({"sessionId":"f972e5","hypothesisId":"H2","location":"telegram_handler.py:handle_confirm_save","message":"save start","data":{"selected_count":len(selected_items),"pending_count":len(pending_items),"items_to_save_count":len(items_to_save),"item_platforms":[i.get("platform") for i in items_to_save],"item_ids":[i.get("id","?")[:40] for i in items_to_save]},"timestamp":int(_dtime.time()*1000)})+"\n")
-    # #endregion
     await query.edit_message_text(f"Processing {len(items_to_save)} items...")
     chat_id = update.effective_chat.id
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -528,7 +525,8 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
                 remote = f"Substack/{item['source']}/{filename}"
                 onedrive_client.ensure_folder(f"Substack/{item['source']}")
                 with open(local_path, "rb") as f:
-                    onedrive_client.upload_file(remote, f.read())
+                    if not onedrive_client.upload_file(remote, f.read()):
+                        raise RuntimeError(f"OneDrive upload failed for {filename}")
 
             elif item["platform"] == "youtube":
                 transcript = await asyncio.get_event_loop().run_in_executor(
@@ -545,7 +543,8 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
                 remote = f"Youtube/{item['source']}/{filename}"
                 onedrive_client.ensure_folder(f"Youtube/{item['source']}")
                 with open(local_path, "rb") as f:
-                    onedrive_client.upload_file(remote, f.read())
+                    if not onedrive_client.upload_file(remote, f.read()):
+                        raise RuntimeError(f"OneDrive upload failed for {filename}")
 
             elif item["platform"] == "website":
                 content = await asyncio.get_event_loop().run_in_executor(
@@ -566,12 +565,9 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
                 remote = f"Websites/{source_label}/{filename}"
                 onedrive_client.ensure_folder(f"Websites/{source_label}")
                 with open(local_path, "rb") as f:
-                    onedrive_client.upload_file(remote, f.read())
+                    if not onedrive_client.upload_file(remote, f.read()):
+                        raise RuntimeError(f"OneDrive upload failed for {filename}")
 
-            # #region agent log
-            _pdf_size = local_path.stat().st_size if local_path.exists() else -1
-            open(_dlp,"a").write(_djson.dumps({"sessionId":"f972e5","hypothesisId":"H5","location":"telegram_handler.py:handle_confirm_save","message":"item processed","data":{"title":item["title"][:50],"platform":item["platform"],"pdf_bytes":_pdf_size,"local_path":str(local_path)},"timestamp":int(_dtime.time()*1000)})+"\n")
-            # #endregion
             local_path.unlink(missing_ok=True)
             config.mark_post_seen(item["id"])
             # FIX-2: Clear strike record for saved items
@@ -579,9 +575,6 @@ async def handle_confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE
             saved += 1
 
         except Exception as exc:
-            # #region agent log
-            open(_dlp,"a").write(_djson.dumps({"sessionId":"f972e5","hypothesisId":"H2","location":"telegram_handler.py:handle_confirm_save","message":"save EXCEPTION","data":{"title":item.get("title","?")[:50],"platform":item.get("platform","?"),"error":str(exc)[:300]},"timestamp":int(_dtime.time()*1000)})+"\n")
-            # #endregion
             logger.error("Failed to save '%s': %s", item["title"], exc)
             await context.bot.send_message(
                 chat_id, f"Error saving '{item['title']}': {exc}"
