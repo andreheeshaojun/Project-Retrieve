@@ -74,8 +74,14 @@ class OneDriveClient:
         """Attempt to acquire a token from the cache / refresh token."""
         accounts = self.app.get_accounts()
         if not accounts:
+            # #region agent log
+            import json as _json, time as _time; _lp = __import__("pathlib").Path(__file__).parent.parent / "debug-f972e5.log"; open(_lp,"a").write(_json.dumps({"sessionId":"f972e5","hypothesisId":"H4","location":"onedrive_client.py:authenticate_silent","message":"no MSAL accounts found","data":{},"timestamp":int(_time.time()*1000)})+"\n")
+            # #endregion
             return False
         result = self.app.acquire_token_silent(SCOPES, account=accounts[0])
+        # #region agent log
+        import json as _json2, time as _time2; _lp2 = __import__("pathlib").Path(__file__).parent.parent / "debug-f972e5.log"; open(_lp2,"a").write(_json2.dumps({"sessionId":"f972e5","hypothesisId":"H4","location":"onedrive_client.py:authenticate_silent","message":"silent token result","data":{"has_result":bool(result),"has_access_token":"access_token" in result if result else False,"error":result.get("error") if result else None,"error_desc":result.get("error_description") if result else None},"timestamp":int(_time2.time()*1000)})+"\n")
+        # #endregion
         if result and "access_token" in result:
             self._set_token(result["access_token"])
             return True
@@ -100,6 +106,9 @@ class OneDriveClient:
         return False
 
     def is_authenticated(self) -> bool:
+        # #region agent log
+        import json as _json, time as _time; _lp = __import__("pathlib").Path(__file__).parent.parent / "debug-f972e5.log"; open(_lp,"a").write(_json.dumps({"sessionId":"f972e5","hypothesisId":"H1","location":"onedrive_client.py:is_authenticated","message":"auth check","data":{"token_set":bool(self.token),"token_preview":str(self.token)[:20] if self.token else None},"timestamp":int(_time.time()*1000)})+"\n")
+        # #endregion
         if self.token:
             return True
         return self.authenticate_silent()
@@ -134,6 +143,9 @@ class OneDriveClient:
                 "@microsoft.graph.conflictBehavior": "fail",
             }
             resp = requests.post(parent_url, headers=self.headers, json=body)
+            # #region agent log
+            import json as _json3, time as _time3; _lp3 = __import__("pathlib").Path(__file__).parent.parent / "debug-f972e5.log"; open(_lp3,"a").write(_json3.dumps({"sessionId":"f972e5","hypothesisId":"H3","location":"onedrive_client.py:ensure_folder","message":"folder create response","data":{"part":part,"status":resp.status_code,"resp_preview":resp.text[:200]},"timestamp":int(_time3.time()*1000)})+"\n")
+            # #endregion
             if resp.status_code not in (201, 409):
                 logger.warning(
                     "Folder creation issue for '%s': %s", part, resp.text
@@ -148,7 +160,13 @@ class OneDriveClient:
         """Upload *content* to <TARGET_FOLDER>/<remote_path>."""
         self._ensure_auth()
         url = f"{self._base_url}/{remote_path}:/content"
+        # #region agent log
+        import json as _json4, time as _time4; _lp4 = __import__("pathlib").Path(__file__).parent.parent / "debug-f972e5.log"; open(_lp4,"a").write(_json4.dumps({"sessionId":"f972e5","hypothesisId":"H2","location":"onedrive_client.py:upload_file","message":"upload attempt","data":{"remote_path":remote_path,"content_bytes":len(content),"url":url},"timestamp":int(_time4.time()*1000)})+"\n")
+        # #endregion
         resp = requests.put(url, headers=self.headers, data=content)
+        # #region agent log
+        import json as _json5, time as _time5; _lp5 = __import__("pathlib").Path(__file__).parent.parent / "debug-f972e5.log"; open(_lp5,"a").write(_json5.dumps({"sessionId":"f972e5","hypothesisId":"H2","location":"onedrive_client.py:upload_file","message":"upload response","data":{"remote_path":remote_path,"status":resp.status_code,"resp_preview":resp.text[:300]},"timestamp":int(_time5.time()*1000)})+"\n")
+        # #endregion
         if resp.status_code in (200, 201):
             logger.info("Uploaded %s/%s", TARGET_FOLDER, remote_path)
             return True
